@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import '../models/coord.dart';
 import '../models/tile_state.dart';
+import '../models/world.dart';
 
 /// Event types for tile state changes
 enum TileEventType {
@@ -41,6 +42,7 @@ class TileEvent {
 /// Only stores tiles that have been modified from their default state
 class TileStorage {
   final Map<Coord, TileState> _tiles = {};
+  World? _world;
 
   /// Get tile state at coordinate, returns default if not modified
   TileState get(Coord coord) {
@@ -83,8 +85,9 @@ class TileStorage {
   }
 
   /// Save storage to JSON file
-  Future<void> saveToFile(String filePath) async {
+  Future<void> saveToFile(String filePath, {World? world}) async {
     final data = {
+      'world': world?.toJson(),
       'tiles': _tiles.map((coord, state) => MapEntry(
             '${coord.x},${coord.y}',
             state.toJson(),
@@ -97,14 +100,25 @@ class TileStorage {
   }
 
   /// Load storage from JSON file
-  Future<void> loadFromFile(String filePath) async {
+  Future<World?> loadFromFile(String filePath) async {
     final file = File(filePath);
     if (!await file.exists()) {
-      return;
+      return null;
     }
 
     final content = await file.readAsString();
     final data = json.decode(content) as Map<String, dynamic>;
+    
+    // Reset world before loading
+    _world = null;
+    
+    // Load world data if present
+    World? world;
+    if (data['world'] != null) {
+      world = World.fromJson(data['world'] as String);
+      _world = world;
+    }
+    
     final tilesData = data['tiles'] as Map<String, dynamic>;
 
     _tiles.clear();
@@ -114,13 +128,19 @@ class TileStorage {
       final state = TileState.fromJson(entry.value as Map<String, dynamic>);
       _tiles[coord] = state;
     }
+    
+    return world;
   }
 
   /// Clear all stored tiles
   void clear() {
     _tiles.clear();
+    _world = null;
   }
 
   /// Get number of modified tiles
   int get count => _tiles.length;
+  
+  /// Get the loaded world
+  World? get world => _world;
 }

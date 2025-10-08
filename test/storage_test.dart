@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:infinite_timesweeper/core/storage/tile_storage.dart';
+import 'package:infinite_timesweeper/core/storage/storage.dart';
 import 'package:infinite_timesweeper/core/models/coord.dart';
 import 'package:infinite_timesweeper/core/models/tile_state.dart';
+import 'package:infinite_timesweeper/core/models/world.dart';
 
 void main() {
   group('TileStorage', () {
@@ -123,6 +124,36 @@ void main() {
 
       expect(storage.count, 0);
       expect(storage.get(Coord(0, 0)).flag, TileFlag.closed);
+    });
+
+    test('clear also resets world', () async {
+      final projectDir = Directory.current;
+      final worldsDir = Directory('${projectDir.path}/worlds');
+
+      if (!worldsDir.existsSync()) {
+        worldsDir.createSync(recursive: true);
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${worldsDir.path}/world_clear_test_$timestamp.json';
+
+      final world = World(
+        seed: 'test-seed',
+        chunkSize: 16,
+        minesPerChunk: 20,
+        name: 'Test',
+        formatVersion: '1.0.0',
+      );
+
+      await storage.saveToFile(filePath, world: world);
+      await storage.loadFromFile(filePath);
+      
+      expect(storage.world, isNotNull);
+      
+      storage.clear();
+      
+      expect(storage.world, null);
+      expect(storage.count, 0);
     });
 
     test('saveToFile and loadFromFile persist data', () {
@@ -297,8 +328,153 @@ void main() {
     });
 
     test('loadFromFile handles non-existent file', () async {
-      await storage.loadFromFile('/non/existent/file.json');
+      final world = await storage.loadFromFile('/non/existent/file.json');
       expect(storage.count, 0);
+      expect(world, null);
+    });
+
+    test('saveToFile and loadFromFile with World object', () async {
+      final projectDir = Directory.current;
+      final worldsDir = Directory('${projectDir.path}/worlds');
+
+      if (!worldsDir.existsSync()) {
+        worldsDir.createSync(recursive: true);
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${worldsDir.path}/world_with_metadata_$timestamp.json';
+
+      // Create a world object
+      final world = World(
+        seed: 'test-seed-123',
+        chunkSize: 16,
+        minesPerChunk: 20,
+        name: 'Test World',
+        formatVersion: '1.0.0',
+      );
+
+      // Apply some tile events
+      storage.applyEvent(TileEvent(
+        coord: Coord(5, 10),
+        type: TileEventType.open,
+        timestamp: DateTime.now(),
+      ));
+
+      // Save with world object
+      await storage.saveToFile(filePath, world: world);
+      expect(File(filePath).existsSync(), true);
+
+      // Load into new storage
+      final newStorage = TileStorage();
+      final loadedWorld = await newStorage.loadFromFile(filePath);
+
+      // Verify world data
+      expect(loadedWorld, isNotNull);
+      expect(loadedWorld!.seed, 'test-seed-123');
+      expect(loadedWorld.chunkSize, 16);
+      expect(loadedWorld.minesPerChunk, 20);
+      expect(loadedWorld.name, 'Test World');
+      expect(loadedWorld.formatVersion, '1.0.0');
+
+      // Verify tiles are still loaded correctly
+      expect(newStorage.get(Coord(5, 10)).flag, TileFlag.open);
+      expect(newStorage.world, isNotNull);
+      expect(newStorage.world!.seed, 'test-seed-123');
+    });
+
+    test('saveToFile without World object still works', () async {
+      final projectDir = Directory.current;
+      final worldsDir = Directory('${projectDir.path}/worlds');
+
+      if (!worldsDir.existsSync()) {
+        worldsDir.createSync(recursive: true);
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${worldsDir.path}/world_no_metadata_$timestamp.json';
+
+      // Apply tile event
+      storage.applyEvent(TileEvent(
+        coord: Coord(3, 7),
+        type: TileEventType.flag,
+        timestamp: DateTime.now(),
+      ));
+
+      // Save without world object
+      await storage.saveToFile(filePath);
+      expect(File(filePath).existsSync(), true);
+
+      // Load and verify
+      final newStorage = TileStorage();
+      final loadedWorld = await newStorage.loadFromFile(filePath);
+
+      expect(loadedWorld, null);
+      expect(newStorage.world, null);
+      expect(newStorage.get(Coord(3, 7)).flag, TileFlag.flagged);
+    });
+
+    test('loadFromFile with complete World data', () async {
+      final projectDir = Directory.current;
+      final worldsDir = Directory('${projectDir.path}/worlds');
+
+      if (!worldsDir.existsSync()) {
+        worldsDir.createSync(recursive: true);
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${worldsDir.path}/world_complete_$timestamp.json';
+
+      final world = World(
+        seed: 'complex-seed-456',
+        chunkSize: 32,
+        minesPerChunk: 50,
+        name: 'Complex World',
+        formatVersion: '2.0.0',
+      );
+
+      // Apply multiple events
+      final events = [
+        TileEvent(
+          coord: Coord(1, 1),
+          type: TileEventType.open,
+          timestamp: DateTime.now(),
+        ),
+        TileEvent(
+          coord: Coord(2, 2),
+          type: TileEventType.flag,
+          timestamp: DateTime.now(),
+        ),
+        TileEvent(
+          coord: Coord(3, 3),
+          type: TileEventType.explode,
+          timestamp: DateTime.now(),
+        ),
+      ];
+
+      for (final event in events) {
+        storage.applyEvent(event);
+      }
+
+      // Save
+      await storage.saveToFile(filePath, world: world);
+
+      // Load
+      final loadedStorage = TileStorage();
+      final loadedWorld = await loadedStorage.loadFromFile(filePath);
+
+      // Verify world
+      expect(loadedWorld, isNotNull);
+      expect(loadedWorld!.seed, 'complex-seed-456');
+      expect(loadedWorld.chunkSize, 32);
+      expect(loadedWorld.minesPerChunk, 50);
+      expect(loadedWorld.name, 'Complex World');
+      expect(loadedWorld.formatVersion, '2.0.0');
+
+      // Verify all tiles
+      expect(loadedStorage.get(Coord(1, 1)).flag, TileFlag.open);
+      expect(loadedStorage.get(Coord(2, 2)).flag, TileFlag.flagged);
+      expect(loadedStorage.get(Coord(3, 3)).exploded, true);
+      expect(loadedStorage.count, 3);
     });
   });
 
