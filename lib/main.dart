@@ -1,8 +1,11 @@
+import 'dart:async' as dart_async;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flame/game.dart';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'core/models/coord.dart';
 import 'core/models/tile_state.dart';
 import 'core/models/world.dart' as core_models;
@@ -20,48 +23,35 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   late TileStorage storage;
   late RulesEngine rules;
   late CameraComponent cameraComponent;
-  
+
   double _startZoom = 1.0;
   final double _tileSize = 32.0;
-  
+
   // Track tiles we've rendered
   final Map<Coord, TileComponent> _tileComponents = {};
-  
+
   // Optimization: track last camera state
   Vector2 _lastCameraPos = Vector2.zero();
   double _lastZoom = 1.0;
-  
+
+  // Save file path
+  String? _saveFilePath;
+  dart_async.Timer? _autoSaveTimer;
+
   @override
   Color backgroundColor() => const Color(0xFF2E7D32); // Dark green
 
   @override
   Future<void> onLoad() async {
-    // Load world from home directory
-    final homeDir = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
-    final worldPath = '$homeDir/infinite_timesweeper/worlds/test_world.json';
-    
-    // Initialize storage and load world
+    // Initialize storage first
     storage = TileStorage();
-    final loadedWorld = await storage.loadFromFile(worldPath);
-    
-    if (loadedWorld == null) {
-      // Create default world if file doesn't exist
-      minesweeperWorld = core_models.World(
-        seed: 'default',
-        chunkSize: 16,
-        minesPerChunk: 40,
-        name: 'Default World',
-        formatVersion: '1.0',
-      );
-      print('Created default world (test_world.json not found)');
-    } else {
-      minesweeperWorld = loadedWorld;
-      print('Loaded world: ${minesweeperWorld.name}');
-    }
-    
+
+    // Try to load from previously selected directory
+    await _loadWorld();
+
     // Initialize rules engine
     rules = RulesEngine(minesweeperWorld, storage);
-    
+
     // Set up camera with world
     final gameWorld = World();
     cameraComponent = CameraComponent(world: gameWorld)
@@ -69,15 +59,136 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       ..viewfinder.position = Vector2.zero();
     add(gameWorld);
     add(cameraComponent);
-    
+
     // Render initial visible tiles
     _updateVisibleTiles();
+
+    // Set up auto-save every 30 seconds
+    _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) => _saveWorld());
+  }
+
+  core_models.World _createDefaultWorld() {
+    return core_models.World(
+      seed: 'default',
+      chunkSize: 16,
+      minesPerChunk: 40,
+      name: 'Default World',
+      formatVersion: '1.0',
+    );
+  }
+
+  Future<void> _loadWorld() async {
+    // Try to load previously selected path from shared preferences
+    final prefs = await SharedPreferences.getInstance();
+    final savedPath = prefs.getString('save_file_path');
+
+    if (savedPath != null && await File(savedPath).exists()) {
+      final loadedWorld = await storage.loadFromFile(savedPath);
+      if (loadedWorld != null) {
+        minesweeperWorld = loadedWorld;
+        _saveFilePath = savedPath;
+        print('Loaded world from saved path: $savedPath');
+        return;
+      }
+    }
+
+    // Try default location (desktop platforms only)
+    if (!Platform.isAndroid) {
+      final homeDir = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+      if (homeDir.isNotEmpty) {
+        final defaultPath = '$homeDir/infinite_timesweeper/worlds/test_world.json';
+        final file = File(defaultPath);
+        if (await file.exists()) {
+          final loadedWorld = await storage.loadFromFile(defaultPath);
+          if (loadedWorld != null) {
+            minesweeperWorld = loadedWorld;
+            _saveFilePath = defaultPath;
+            await prefs.setString('save_file_path', defaultPath);
+            print('Loaded world from: $defaultPath');
+            return;
+          }
+        }
+      }
+    }
+
+    // Prompt user to select directory
+    await _selectSaveLocation();
+
+    // If still no path, create default world
+    if (_saveFilePath == null) {
+      minesweeperWorld = _createDefaultWorld();
+      print('Created default world (no save location selected)');
+    }
+  }
+
+  Future<void> _selectSaveLocation() async {
+    try {
+      // Get directory from user
+      final directoryPath = await getDirectoryPath(
+        confirmButtonText: 'Select infinite_timesweeper folder',
+      );
+
+      if (directoryPath != null) {
+        // Create worlds subdirectory if it doesn't exist
+        final worldsDir = Directory('$directoryPath/worlds');
+        if (!await worldsDir.exists()) {
+          await worldsDir.create(recursive: true);
+        }
+
+        final filePath = '${worldsDir.path}/test_world.json';
+        _saveFilePath = filePath;
+
+        // Save path to shared preferences
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('save_file_path', filePath);
+
+        // Try to load existing file
+        final file = File(filePath);
+        if (await file.exists()) {
+          final loadedWorld = await storage.loadFromFile(filePath);
+          if (loadedWorld != null) {
+            minesweeperWorld = loadedWorld;
+            print('Loaded world from: $filePath');
+            return;
+          }
+        }
+
+        // Create new world if file doesn't exist
+        minesweeperWorld = _createDefaultWorld();
+        print('Created new world at: $filePath');
+      } else {
+        print('No directory selected');
+        minesweeperWorld = _createDefaultWorld();
+      }
+    } catch (e) {
+      print('Error selecting directory: $e');
+      minesweeperWorld = _createDefaultWorld();
+    }
+  }
+
+  Future<void> _saveWorld() async {
+    if (_saveFilePath != null) {
+      try {
+        await storage.saveToFile(_saveFilePath!, world: minesweeperWorld);
+        print('Saved ${storage.count} tiles to: $_saveFilePath');
+      } catch (e) {
+        print('Error saving world: $e');
+      }
+    }
+  }
+
+  @override
+  void onRemove() {
+    _autoSaveTimer?.cancel();
+    // Attempt final save (fire and forget as we're closing)
+    _saveWorld();
+    super.onRemove();
   }
 
   @override
   void update(double dt) {
     super.update(dt);
-    
+
     // Only update if camera moved significantly
     final camera = cameraComponent.viewfinder;
     if ((camera.position - _lastCameraPos).length > _tileSize * 2 ||
@@ -92,16 +203,16 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     final camera = cameraComponent.viewfinder;
     final zoom = camera.zoom;
     final cameraPos = camera.position;
-    
+
     // Calculate visible area in tile coordinates
     final screenWidth = size.x / zoom;
     final screenHeight = size.y / zoom;
-    
+
     final minX = ((cameraPos.x - screenWidth / 2) / _tileSize).floor() - 1;
     final maxX = ((cameraPos.x + screenWidth / 2) / _tileSize).ceil() + 1;
     final minY = ((cameraPos.y - screenHeight / 2) / _tileSize).floor() - 1;
     final maxY = ((cameraPos.y + screenHeight / 2) / _tileSize).ceil() + 1;
-    
+
     // Add tiles that are visible but not yet rendered
     for (int y = minY; y <= maxY; y++) {
       for (int x = minX; x <= maxX; x++) {
@@ -117,7 +228,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
         }
       }
     }
-    
+
     // Update all rendered tiles
     for (final tile in _tileComponents.values) {
       tile.updateTileState();
@@ -133,7 +244,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   @override
   void onScaleUpdate(ScaleUpdateInfo info) {
     final scale = info.scale.global;
-    
+
     if (!scale.isIdentity()) {
       // Zoom
       cameraComponent.viewfinder.zoom = (_startZoom * scale.y).clamp(0.1, 5.0);
@@ -147,29 +258,31 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   // Double tap to open tile
   @override
   void onDoubleTapDown(TapDownInfo info) {
-    final worldPos = cameraComponent.viewfinder.position + 
+    final worldPos = cameraComponent.viewfinder.position +
         (info.eventPosition.widget - size / 2) / cameraComponent.viewfinder.zoom;
     final coord = Coord(
       (worldPos.x / _tileSize).floor(),
       (worldPos.y / _tileSize).floor(),
     );
-    
+
     rules.openTile(coord);
     _updateVisibleTiles();
+    _saveWorld(); // Save after tile interaction
   }
 
   // Long press to flag tile
   @override
   void onLongPressStart(LongPressStartInfo info) {
-    final worldPos = cameraComponent.viewfinder.position + 
+    final worldPos = cameraComponent.viewfinder.position +
         (info.eventPosition.widget - size / 2) / cameraComponent.viewfinder.zoom;
     final coord = Coord(
       (worldPos.x / _tileSize).floor(),
       (worldPos.y / _tileSize).floor(),
     );
-    
+
     rules.flagTile(coord);
     _updateVisibleTiles();
+    _saveWorld(); // Save after tile interaction
   }
 
   // Check if chunk has recent explosion
@@ -177,11 +290,11 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
     final now = DateTime.now();
     final cutoff = now.subtract(const Duration(minutes: 5));
-    
+
     final chunkSize = minesweeperWorld.chunkSize;
     final startX = chunkCoord.chunkX * chunkSize;
     final startY = chunkCoord.chunkY * chunkSize;
-    
+
     for (int ly = 0; ly < chunkSize; ly++) {
       for (int lx = 0; lx < chunkSize; lx++) {
         final c = Coord(startX + lx, startY + ly);
@@ -199,7 +312,7 @@ class TileComponent extends PositionComponent {
   final Coord coord;
   final double tileSize;
   final MinesweeperGame game;
-  
+
   TileComponent({
     required this.coord,
     required this.tileSize,
@@ -217,10 +330,10 @@ class TileComponent extends PositionComponent {
   void render(Canvas canvas) {
     final state = game.storage.get(coord);
     final isTimedOut = game.isChunkTimedOut(coord);
-    
+
     // Draw tile based on state
     final paint = Paint();
-    
+
     if (state.exploded) {
       // Black for exploded
       paint.color = Colors.black;
@@ -235,21 +348,21 @@ class TileComponent extends PositionComponent {
       final isDark = (coord.x + coord.y) % 2 == 0;
       paint.color = isDark ? const Color(0xFF1B5E20) : const Color(0xFF4CAF50);
     }
-    
+
     // Apply blur effect for timed out chunks
     if (isTimedOut && state.flag == TileFlag.closed) {
       paint.color = paint.color.withAlpha((255 * 0.5).toInt());
     }
-    
+
     canvas.drawRect(size.toRect(), paint);
-    
+
     // Draw border
     final borderPaint = Paint()
       ..color = Colors.black26
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.0;
     canvas.drawRect(size.toRect(), borderPaint);
-    
+
     // Draw hint number if open and not exploded
     if (state.flag == TileFlag.open && !state.exploded) {
       final hint = game.rules.getHint(coord);
