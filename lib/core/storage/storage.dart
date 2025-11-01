@@ -108,17 +108,17 @@ class TileStorage {
 
     final content = await file.readAsString();
     final data = json.decode(content) as Map<String, dynamic>;
-    
+
     // Reset world before loading
     _world = null;
-    
+
     // Load world data if present
     World? world;
     if (data['world'] != null) {
       world = World.fromJson(data['world'] as String);
       _world = world;
     }
-    
+
     final tilesData = data['tiles'] as Map<String, dynamic>;
 
     _tiles.clear();
@@ -128,7 +128,7 @@ class TileStorage {
       final state = TileState.fromJson(entry.value as Map<String, dynamic>);
       _tiles[coord] = state;
     }
-    
+
     return world;
   }
 
@@ -140,7 +140,7 @@ class TileStorage {
 
   /// Get number of modified tiles
   int get count => _tiles.length;
-  
+
   /// Get the loaded world
   World? get world => _world;
 }

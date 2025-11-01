@@ -4,8 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flame/game.dart';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
-import 'package:file_selector/file_selector.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 import 'core/models/coord.dart';
 import 'core/models/tile_state.dart';
 import 'core/models/world.dart' as core_models;
@@ -34,7 +33,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   Vector2 _lastCameraPos = Vector2.zero();
   double _lastZoom = 1.0;
 
-  // Save file path
+  // Save file path for local storage
   String? _saveFilePath;
   dart_async.Timer? _autoSaveTimer;
 
@@ -78,92 +77,29 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   }
 
   Future<void> _loadWorld() async {
-    // Try to load previously selected path from shared preferences
-    final prefs = await SharedPreferences.getInstance();
-    final savedPath = prefs.getString('save_file_path');
+    // Get app's local storage directory
+    final appDir = await getApplicationDocumentsDirectory();
+    final worldsDir = Directory('${appDir.path}/worlds');
+    if (!await worldsDir.exists()) {
+      await worldsDir.create(recursive: true);
+    }
 
-    if (savedPath != null && await File(savedPath).exists()) {
-      final loadedWorld = await storage.loadFromFile(savedPath);
+    _saveFilePath = '${worldsDir.path}/test_world.json';
+
+    // Try to load existing file
+    final file = File(_saveFilePath!);
+    if (await file.exists()) {
+      final loadedWorld = await storage.loadFromFile(_saveFilePath!);
       if (loadedWorld != null) {
         minesweeperWorld = loadedWorld;
-        _saveFilePath = savedPath;
-        print('Loaded world from saved path: $savedPath');
+        print('Loaded world from: $_saveFilePath');
         return;
       }
     }
 
-    // Try default location (desktop platforms only)
-    if (!Platform.isAndroid) {
-      final homeDir = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
-      if (homeDir.isNotEmpty) {
-        final defaultPath = '$homeDir/infinite_timesweeper/worlds/test_world.json';
-        final file = File(defaultPath);
-        if (await file.exists()) {
-          final loadedWorld = await storage.loadFromFile(defaultPath);
-          if (loadedWorld != null) {
-            minesweeperWorld = loadedWorld;
-            _saveFilePath = defaultPath;
-            await prefs.setString('save_file_path', defaultPath);
-            print('Loaded world from: $defaultPath');
-            return;
-          }
-        }
-      }
-    }
-
-    // Prompt user to select directory
-    await _selectSaveLocation();
-
-    // If still no path, create default world
-    if (_saveFilePath == null) {
-      minesweeperWorld = _createDefaultWorld();
-      print('Created default world (no save location selected)');
-    }
-  }
-
-  Future<void> _selectSaveLocation() async {
-    try {
-      // Get directory from user
-      final directoryPath = await getDirectoryPath(
-        confirmButtonText: 'Select infinite_timesweeper folder',
-      );
-
-      if (directoryPath != null) {
-        // Create worlds subdirectory if it doesn't exist
-        final worldsDir = Directory('$directoryPath/worlds');
-        if (!await worldsDir.exists()) {
-          await worldsDir.create(recursive: true);
-        }
-
-        final filePath = '${worldsDir.path}/test_world.json';
-        _saveFilePath = filePath;
-
-        // Save path to shared preferences
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('save_file_path', filePath);
-
-        // Try to load existing file
-        final file = File(filePath);
-        if (await file.exists()) {
-          final loadedWorld = await storage.loadFromFile(filePath);
-          if (loadedWorld != null) {
-            minesweeperWorld = loadedWorld;
-            print('Loaded world from: $filePath');
-            return;
-          }
-        }
-
-        // Create new world if file doesn't exist
-        minesweeperWorld = _createDefaultWorld();
-        print('Created new world at: $filePath');
-      } else {
-        print('No directory selected');
-        minesweeperWorld = _createDefaultWorld();
-      }
-    } catch (e) {
-      print('Error selecting directory: $e');
-      minesweeperWorld = _createDefaultWorld();
-    }
+    // Create new world if no save exists
+    minesweeperWorld = _createDefaultWorld();
+    print('Created new world at: $_saveFilePath');
   }
 
   Future<void> _saveWorld() async {
