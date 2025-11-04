@@ -26,8 +26,13 @@ class SeededRng {
   /// Integer in [0, max)
   int nextInt(int max) {
     if (max <= 0) throw ArgumentError('max must be > 0');
-    // use nextDouble * max — simple, deterministic, tiny bias negligible for game usage
-    return (nextDouble() * max).floor();
+    // Use rejection sampling to avoid modulo bias
+    final limit = ((1 << 53) ~/ max) * max;
+    int value;
+    do {
+      value = _next64() >> 11; // 53 bits
+    } while (value >= limit);
+    return value % max;
   }
 }
 
