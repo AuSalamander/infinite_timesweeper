@@ -27,7 +27,7 @@ You can obtain builds from the repository releases (GitHub), but the recommended
 
 ## Step - by step installation guide
 
-1. Clic badge higer, it will redirect you to Obtainium app. (If Obtainium not installed - scroll to "If you don’t have Obtainium")
+1. Clic badge higer, it will redirect you to Obtainium app. (If you don’t have Obtainium - scroll to "If you don’t have Obtainium")
 2. Tap **confirm**. Obtainium will read the releases and add the app to your list. Download and installation would start automaticly. 
 3. If download didn`t start ore stopped, tap the app entry, then tap **Install**.
 4. When Android asks for permission to install the APK, confirm/agree - tap **Install**.
@@ -45,7 +45,7 @@ You can install Obtainium itself from several sources:
 - **Official Obtainium website** - see the Obtainium website and wiki for downloads and documentation. ([obtainium.imranr.dev](https://obtainium.imranr.dev))
 - **GitHub releases** - you can download the Obtainium APK from the project's GitHub releases page and install it manually. ([GitHub](https://github.com/ImranR98/Obtainium/releases))
 
-### Basic steps to install Obtainium (manual APK install)
+##### Basic steps to install Obtainium (manual APK install)
 1. Download the Obtainium APK from a trusted source (F-Droid, official site, or GitHub).
 2. Open the downloaded file (or open your Downloads folder) and tap the APK.
 3. If Android warns about unknown sources, follow the prompt to allow installs from your browser or file manager.
