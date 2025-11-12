@@ -48,3 +48,5 @@ app.*.map.json
 worlds/
 
 android/key.properties
+
+au_salamander-key.jks
