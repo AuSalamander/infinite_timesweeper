@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
         android:label="Infinite TimeSweeper"
-        android:name="${applicationName}"
+        android:name="com.AuSalamander.infinite_timesweeper.MainActivity"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"

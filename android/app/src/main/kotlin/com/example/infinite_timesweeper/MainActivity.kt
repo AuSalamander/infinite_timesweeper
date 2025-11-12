@@ -1,4 +1,4 @@
-package com.example.infinite_timesweeper
+package com.AuSalamander.infinite_timesweeper
 
 import io.flutter.embedding.android.FlutterActivity
 
