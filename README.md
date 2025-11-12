@@ -7,9 +7,9 @@
 ## Features
 
 - Infinite, procedurally-generated board.
-- Classic Minesweeper rules with modern UI.
-- Lightweight and configurable.
-- Designed to run well on a variety of Android devices.
+- Daubletap to open.
+- Hold to flag.
+- Doubletap solved hint to autoopen.
 
 
 
