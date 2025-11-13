@@ -23,6 +23,8 @@ You can obtain builds from the repository releases (GitHub), but the recommended
 
 (If you prefer manual installs: grab the APK from this repo's **Releases** page on GitHub.)
 
+SHA256: 74:94:48:91:48:60:36:9D:EA:77:38:3B:74:5E:5D:FC:36:8C:3E:BC:03:24:57:61:5F:56:C4:E0:BC:82:6B:C4
+
 
 
 ## Step - by step installation guide
