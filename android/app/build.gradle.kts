@@ -28,7 +28,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.au_salamander.infinite_timesweeper"
+        applicationId = "com.au.salamander.infinite_timesweeper"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
