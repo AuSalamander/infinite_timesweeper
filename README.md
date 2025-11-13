@@ -30,7 +30,7 @@ SHA256: 74:94:48:91:48:60:36:9D:EA:77:38:3B:74:5E:5D:FC:36:8C:3E:BC:03:24:57:61:
 ## Step - by step installation guide
 
 1. Clic badge higer, it will redirect you to Obtainium app. (If you don’t have Obtainium - scroll to "If you don’t have Obtainium")
-2. Tap **confirm**. Obtainium will read the releases and add the app to your list. Download and installation would start automaticly. 
+2. Tap **confirm**. Obtainium will read the releases and add the app to your list.
 3. If download didn`t start ore stopped, tap the app entry, then tap **Install**.
 4. When Android asks for permission to install the APK, confirm/agree - tap **Install**.
 5. If Android blocks the install, it will usually show a prompt like **"Install unknown apps"** - tap to allow installs from the browser or Obtainium, then retry the installation.
