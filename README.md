@@ -19,7 +19,7 @@ A stable release is not ready yet, but you can help test prereleases.
 
 You can obtain builds from the repository releases (GitHub), but the recommended way to install and keep prereleases updated is via **Obtainium** - a small app that installs and updates apps directly from their release pages. ([obtainium.imranr.dev](https://obtainium.imranr.dev))
 
-[![Get it on Obtainium](https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png)](http://apps.obtainium.imranr.dev/redirect.html?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252FAuSalamander%252Finfinite_timesweeper%2522%252C%2522author%2522%253A%2522AuSalamander%2522%252C%2522name%2522%253A%2522infinite_timesweeper%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522includePrereleases%255C%2522%253A%2520true%257D%2522%257D)
+[![Get it on Obtainium](https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png)](http://apps.obtainium.imranr.dev/redirect.html?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252FAuSalamander%252Finfinite_timesweeper%2522%252C%2522author%2522%253A%2522AuSalamander%2522%252C%2522name%2522%253A%2522com.au.salamande.infinite_timesweeper%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522includePrereleases%255C%2522%253A%2520true%257D%2522%257D)
 
 (If you prefer manual installs: grab the APK from this repo's **Releases** page on GitHub.)
 
