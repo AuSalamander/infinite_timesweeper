@@ -12,17 +12,8 @@ class RulesEngine {
 
   RulesEngine(this.world, this.storage);
 
-  /// Get chunk data with caching
-  Map<Coord, int> _getChunkData(int chunkX, int chunkY) {
-    final key = '$chunkX,$chunkY';
-    if (!_chunkCache.containsKey(key)) {
-      _chunkCache[key] = generateChunk(world, chunkX, chunkY);
-    }
-    return _chunkCache[key]!;
-  }
-
-  /// Check if chunk had explosions in last 5 minutes
-  bool _hasRecentExplosion(int chunkX, int chunkY) {
+  /// Check if chunk currently has active timeout (explosion within last 5 minutes)
+  bool _hasActiveTimeout(int chunkX, int chunkY) {
     final now = DateTime.now();
     final cutoff = now.subtract(const Duration(minutes: 5));
     
@@ -41,6 +32,15 @@ class RulesEngine {
       }
     }
     return false;
+  }
+
+  /// Get chunk data with caching
+  Map<Coord, int> _getChunkData(int chunkX, int chunkY) {
+    final key = '$chunkX,$chunkY';
+    if (!_chunkCache.containsKey(key)) {
+      _chunkCache[key] = generateChunk(world, chunkX, chunkY);
+    }
+    return _chunkCache[key]!;
   }
 
   /// Get hint number for a coordinate (requires tile to be generated)
@@ -97,9 +97,9 @@ class RulesEngine {
       // Don't open if already open or flagged
       if (state.flag != TileFlag.closed) continue;
 
-      // Check chunk explosion rule
+      // Check if chunk has active timeout - prevent opening if so
       final chunkCoord = coord.toChunk(world.chunkSize);
-      if (_hasRecentExplosion(chunkCoord.chunkX, chunkCoord.chunkY)) {
+      if (_hasActiveTimeout(chunkCoord.chunkX, chunkCoord.chunkY)) {
         continue;
       }
 

@@ -143,4 +143,9 @@ class TileStorage {
 
   /// Get the loaded world
   World? get world => _world;
+
+  /// Update a tile state directly (for special cases like clearing exploded flag)
+  void updateTileState(Coord coord, TileState newState) {
+    _tiles[coord] = newState;
+  }
 }

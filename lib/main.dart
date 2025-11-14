@@ -12,9 +12,55 @@ import 'core/storage/storage.dart';
 import 'core/rules/rules_engine.dart';
 
 void main() {
-  runApp(const GameWidget.controlled(
-    gameFactory: MinesweeperGame.new,
-  ));
+  runApp(const MinesweeperApp());
+}
+
+class MinesweeperApp extends StatefulWidget {
+  const MinesweeperApp({super.key});
+
+  @override
+  State<MinesweeperApp> createState() => _MinesweeperAppState();
+}
+
+class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObserver {
+  MinesweeperGame? _game;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    _updateGameBrightness();
+  }
+
+  void _updateGameBrightness() {
+    if (_game != null) {
+      final brightness = WidgetsBinding.instance.platformDispatcher.platformBrightness;
+      _game!.updateBrightness(brightness);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_game == null) {
+      _game = MinesweeperGame();
+      // Update brightness after game is created
+      Future.microtask(() => _updateGameBrightness());
+    }
+    return GameWidget<MinesweeperGame>.controlled(
+      gameFactory: () => _game!,
+    );
+  }
 }
 
 class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, LongPressDetector {
@@ -37,11 +83,25 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   String? _saveFilePath;
   dart_async.Timer? _autoSaveTimer;
 
+  // Theme brightness
+  Brightness brightness = Brightness.light;
+  
+  // Timer update tracking
+  static const Duration _chunkTimeoutDuration = Duration(minutes: 5);
+  double _timeSinceLastTimerUpdate = 0;
+
   @override
-  Color backgroundColor() => const Color(0xFF2E7D32); // Dark green
+  Color backgroundColor() {
+    return brightness == Brightness.dark 
+        ? const Color(0xFF1A1A1A)  // Dark background
+        : const Color(0xFF2E7D32);  // Light mode green background
+  }
 
   @override
   Future<void> onLoad() async {
+    // Initialize brightness from platform
+    brightness = WidgetsBinding.instance.platformDispatcher.platformBrightness;
+    
     // Initialize storage first
     storage = TileStorage();
 
@@ -64,6 +124,13 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
     // Set up auto-save every 30 seconds
     _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) => _saveWorld());
+  }
+
+  void updateBrightness(Brightness newBrightness) {
+    if (brightness != newBrightness) {
+      brightness = newBrightness;
+      _updateVisibleTiles();
+    }
   }
 
   core_models.World _createDefaultWorld() {
@@ -132,6 +199,47 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       _updateVisibleTiles();
       _lastCameraPos = camera.position.clone();
       _lastZoom = camera.zoom;
+    }
+    
+    // Update timer display every second if there are active timeouts
+    _timeSinceLastTimerUpdate += dt;
+    if (_timeSinceLastTimerUpdate >= 1.0) {
+      _timeSinceLastTimerUpdate = 0;
+      
+      // Convert expired exploded tiles to flagged
+      _convertExpiredExplosionsToFlags();
+      
+      // Check if any visible tiles have active timeouts
+      for (final tile in _tileComponents.values) {
+        if (getChunkTimeoutInfo(tile.coord).$1) {
+          _updateVisibleTiles();
+          break;
+        }
+      }
+    }
+  }
+
+  // Convert exploded tiles to flagged after timeout expires
+  void _convertExpiredExplosionsToFlags() {
+    final now = DateTime.now();
+    final tiles = storage.snapshot();
+    
+    for (final entry in tiles.entries) {
+      final coord = entry.key;
+      final state = entry.value;
+      
+      if (state.exploded && state.openedAt != null) {
+        final unlockTime = state.openedAt!.add(_chunkTimeoutDuration);
+        if (now.isAfter(unlockTime)) {
+          // Convert to flagged and remove exploded state
+          final newState = TileState(
+            flag: TileFlag.flagged,
+            exploded: false,
+            openedAt: null,
+          );
+          storage.updateTileState(coord, newState);
+        }
+      }
     }
   }
 
@@ -221,26 +329,40 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     _saveWorld(); // Save after tile interaction
   }
 
-  // Check if chunk has recent explosion
-  bool isChunkTimedOut(Coord coord) {
+  // Check if chunk has recent explosion and get time remaining
+  (bool, Duration?) getChunkTimeoutInfo(Coord coord) {
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
     final now = DateTime.now();
-    final cutoff = now.subtract(const Duration(minutes: 5));
+    final cutoff = now.subtract(_chunkTimeoutDuration);
 
     final chunkSize = minesweeperWorld.chunkSize;
     final startX = chunkCoord.chunkX * chunkSize;
     final startY = chunkCoord.chunkY * chunkSize;
+
+    DateTime? mostRecentExplosion;
 
     for (int ly = 0; ly < chunkSize; ly++) {
       for (int lx = 0; lx < chunkSize; lx++) {
         final c = Coord(startX + lx, startY + ly);
         final state = storage.get(c);
         if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
-          return true;
+          if (mostRecentExplosion == null || state.openedAt!.isAfter(mostRecentExplosion)) {
+            mostRecentExplosion = state.openedAt;
+          }
         }
       }
     }
-    return false;
+
+    if (mostRecentExplosion != null) {
+      final unlockTime = mostRecentExplosion.add(_chunkTimeoutDuration);
+      final remaining = unlockTime.difference(now);
+      return (true, remaining);
+    }
+    return (false, null);
+  }
+
+  bool isChunkTimedOut(Coord coord) {
+    return getChunkTimeoutInfo(coord).$1;
   }
 }
 
@@ -265,39 +387,124 @@ class TileComponent extends PositionComponent {
   @override
   void render(Canvas canvas) {
     final state = game.storage.get(coord);
-    final isTimedOut = game.isChunkTimedOut(coord);
+    final timeoutInfo = game.getChunkTimeoutInfo(coord);
+    final isTimedOut = timeoutInfo.$1;
+    final timeRemaining = timeoutInfo.$2;
+    final isDarkMode = game.brightness == Brightness.dark;
+
+    // Calculate chunk boundaries for drawing chunk borders
+    final chunkCoord = coord.toChunk(game.minesweeperWorld.chunkSize);
+    final chunkSize = game.minesweeperWorld.chunkSize;
+    final chunkStartX = chunkCoord.chunkX * chunkSize;
+    final chunkStartY = chunkCoord.chunkY * chunkSize;
+    final isLeftEdge = coord.x == chunkStartX;
+    final isRightEdge = coord.x == chunkStartX + chunkSize - 1;
+    final isTopEdge = coord.y == chunkStartY;
+    final isBottomEdge = coord.y == chunkStartY + chunkSize - 1;
 
     // Draw tile based on state
     final paint = Paint();
 
-    if (state.exploded) {
-      // Black for exploded
+    if (state.exploded && !isTimedOut) {
+      // Black for exploded (but not during timeout)
       paint.color = Colors.black;
     } else if (state.flag == TileFlag.flagged) {
       // Red for flagged
       paint.color = Colors.red;
     } else if (state.flag == TileFlag.open) {
-      // White for open
-      paint.color = Colors.white;
+      // White/light grey for open in light mode, darker in dark mode
+      paint.color = isDarkMode ? const Color(0xFF2A2A2A) : Colors.white;
     } else {
-      // Closed: checkerboard pattern (dark/light green)
-      final isDark = (coord.x + coord.y) % 2 == 0;
-      paint.color = isDark ? const Color(0xFF1B5E20) : const Color(0xFF4CAF50);
+      // Closed tiles
+      if (isDarkMode) {
+        // Dark mode: all closed tiles black
+        paint.color = Colors.black;
+      } else {
+        // Light mode: lighter green checkerboard
+        final isDark = (coord.x + coord.y) % 2 == 0;
+        paint.color = isDark ? const Color(0xFF66BB6A) : const Color(0xFF81C784);
+      }
     }
 
-    // Apply blur effect for timed out chunks
+    // Apply blur effect for timed out chunks (more visible now)
     if (isTimedOut && state.flag == TileFlag.closed) {
-      paint.color = paint.color.withAlpha((255 * 0.5).toInt());
+      paint.color = paint.color.withAlpha((255 * 0.3).toInt());
     }
 
     canvas.drawRect(size.toRect(), paint);
 
-    // Draw border
-    final borderPaint = Paint()
-      ..color = Colors.black26
+    // Draw red dot on exploded tiles during timeout
+    if (state.exploded && isTimedOut) {
+      final dotPaint = Paint()
+        ..color = Colors.red
+        ..style = PaintingStyle.fill;
+      
+      canvas.drawCircle(
+        Offset(tileSize / 2, tileSize / 2),
+        tileSize * 0.15,
+        dotPaint,
+      );
+    }
+
+    // Draw glow effect on open tiles
+    if (state.flag == TileFlag.open && !state.exploded) {
+      final glowPaint = Paint()
+        ..color = (isDarkMode ? Colors.grey[800]! : Colors.grey[300]!).withAlpha(128)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
+      
+      canvas.drawCircle(Offset(tileSize / 2, tileSize / 2), tileSize * 0.35, glowPaint);
+    }
+
+    // Draw tile borders (only in dark mode for individual tiles)
+    if (isDarkMode) {
+      final tileBorderPaint = Paint()
+        ..color = const Color(0xFF00FF00)  // Green borders in dark mode
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.5;
+      canvas.drawRect(size.toRect(), tileBorderPaint);
+    }
+
+    // Draw chunk borders (thicker, always visible)
+    // Make chunks touch on 1/3 of tile width by extending borders
+    final chunkBorderWidth = isDarkMode ? 2.5 : 3.5;
+    final chunkBorderColor = isDarkMode ? const Color(0xFF9C27B0) : Colors.black;  // Violet in dark, black in light
+    final chunkBorderPaint = Paint()
+      ..color = chunkBorderColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawRect(size.toRect(), borderPaint);
+      ..strokeWidth = chunkBorderWidth
+      ..strokeCap = StrokeCap.square;
+
+    final halfBorder = chunkBorderWidth / 2;
+    final overlap = tileSize / 3;  // Overlap 1/3 of tile width
+
+    if (isLeftEdge) {
+      canvas.drawLine(
+        Offset(halfBorder, -overlap),
+        Offset(halfBorder, tileSize + overlap),
+        chunkBorderPaint,
+      );
+    }
+    if (isRightEdge) {
+      canvas.drawLine(
+        Offset(tileSize - halfBorder, -overlap),
+        Offset(tileSize - halfBorder, tileSize + overlap),
+        chunkBorderPaint,
+      );
+    }
+    if (isTopEdge) {
+      canvas.drawLine(
+        Offset(-overlap, halfBorder),
+        Offset(tileSize + overlap, halfBorder),
+        chunkBorderPaint,
+      );
+    }
+    if (isBottomEdge) {
+      canvas.drawLine(
+        Offset(-overlap, tileSize - halfBorder),
+        Offset(tileSize + overlap, tileSize - halfBorder),
+        chunkBorderPaint,
+      );
+    }
 
     // Draw hint number if open and not exploded
     if (state.flag == TileFlag.open && !state.exploded) {
@@ -307,7 +514,7 @@ class TileComponent extends PositionComponent {
           text: TextSpan(
             text: hint.toString(),
             style: TextStyle(
-              color: _getHintColor(hint),
+              color: _getHintColor(hint, isDarkMode),
               fontSize: tileSize * 0.6,
               fontWeight: FontWeight.bold,
             ),
@@ -324,28 +531,96 @@ class TileComponent extends PositionComponent {
         );
       }
     }
+
+    // Draw timer on timed-out chunks (centered in the chunk)
+    if (isTimedOut && timeRemaining != null) {
+      // Only draw on the center tile of the chunk
+      final centerTileX = chunkSize ~/ 2;
+      final centerTileY = chunkSize ~/ 2;
+      final isCenterTile = (coord.x - chunkStartX) == centerTileX && (coord.y - chunkStartY) == centerTileY;
+      
+      if (isCenterTile) {
+        final minutes = timeRemaining.inMinutes;
+        final seconds = timeRemaining.inSeconds % 60;
+        final timerText = '$minutes:${seconds.toString().padLeft(2, '0')}';
+        
+        final timerPainter = TextPainter(
+          text: TextSpan(
+            text: timerText,
+            style: TextStyle(
+              color: isDarkMode ? Colors.red[300] : Colors.red[700],
+              fontSize: tileSize * 1.2,
+              fontWeight: FontWeight.bold,
+              shadows: [
+                Shadow(
+                  color: Colors.black.withAlpha(200),
+                  offset: const Offset(2, 2),
+                  blurRadius: 4,
+                ),
+              ],
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        timerPainter.layout();
+        
+        // Draw centered on this tile
+        timerPainter.paint(
+          canvas,
+          Offset(
+            (tileSize - timerPainter.width) / 2,
+            (tileSize - timerPainter.height) / 2,
+          ),
+        );
+      }
+    }
   }
 
-  Color _getHintColor(int hint) {
-    switch (hint) {
-      case 1:
-        return Colors.blue;
-      case 2:
-        return Colors.green;
-      case 3:
-        return Colors.red;
-      case 4:
-        return Colors.purple;
-      case 5:
-        return Colors.orange;
-      case 6:
-        return Colors.cyan;
-      case 7:
-        return Colors.black;
-      case 8:
-        return Colors.grey;
-      default:
-        return Colors.black;
+  Color _getHintColor(int hint, bool isDarkMode) {
+    if (isDarkMode) {
+      // Lighter colors for dark mode
+      switch (hint) {
+        case 1:
+          return Colors.lightBlue[300]!;
+        case 2:
+          return Colors.lightGreen[300]!;
+        case 3:
+          return Colors.red[300]!;
+        case 4:
+          return Colors.purple[300]!;
+        case 5:
+          return Colors.orange[300]!;
+        case 6:
+          return Colors.cyan[300]!;
+        case 7:
+          return Colors.grey[300]!;
+        case 8:
+          return Colors.grey[400]!;
+        default:
+          return Colors.grey[300]!;
+      }
+    } else {
+      // Original colors for light mode
+      switch (hint) {
+        case 1:
+          return Colors.blue;
+        case 2:
+          return Colors.green;
+        case 3:
+          return Colors.red;
+        case 4:
+          return Colors.purple;
+        case 5:
+          return Colors.orange;
+        case 6:
+          return Colors.cyan;
+        case 7:
+          return Colors.black;
+        case 8:
+          return Colors.grey;
+        default:
+          return Colors.black;
+      }
     }
   }
 }
