@@ -89,6 +89,12 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   // Timer update tracking
   static const Duration _chunkTimeoutDuration = Duration(minutes: 5);
   double _timeSinceLastTimerUpdate = 0;
+  
+  // Track explosion timestamps per chunk for performance
+  final Map<String, DateTime> _chunkExplosionTimes = {};
+  
+  // Dirty flag for saves
+  bool _hasUnsavedChanges = false;
 
   @override
   Color backgroundColor() {
@@ -122,8 +128,12 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     // Render initial visible tiles
     _updateVisibleTiles();
 
-    // Set up auto-save every 30 seconds
-    _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) => _saveWorld());
+    // Set up auto-save every 30 seconds (only if changes)
+    _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_hasUnsavedChanges) {
+        _saveWorld();
+      }
+    });
   }
 
   void updateBrightness(Brightness newBrightness) {
@@ -160,6 +170,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       if (loadedWorld != null) {
         minesweeperWorld = loadedWorld;
         print('Loaded world from: $_saveFilePath');
+        
+        // Rebuild chunk explosion cache from loaded data
+        _rebuildChunkExplosionCache();
         return;
       }
     }
@@ -170,9 +183,10 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   }
 
   Future<void> _saveWorld() async {
-    if (_saveFilePath != null) {
+    if (_saveFilePath != null && _hasUnsavedChanges) {
       try {
         await storage.saveToFile(_saveFilePath!, world: minesweeperWorld);
+        _hasUnsavedChanges = false;
         print('Saved ${storage.count} tiles to: $_saveFilePath');
       } catch (e) {
         print('Error saving world: $e');
@@ -257,10 +271,15 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     final minY = ((cameraPos.y - screenHeight / 2) / _tileSize).floor() - 1;
     final maxY = ((cameraPos.y + screenHeight / 2) / _tileSize).ceil() + 1;
 
+    // Track which tiles should be visible
+    final visibleCoords = <Coord>{};
+    
     // Add tiles that are visible but not yet rendered
     for (int y = minY; y <= maxY; y++) {
       for (int x = minX; x <= maxX; x++) {
         final coord = Coord(x, y);
+        visibleCoords.add(coord);
+        
         if (!_tileComponents.containsKey(coord)) {
           final tile = TileComponent(
             coord: coord,
@@ -273,9 +292,19 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       }
     }
 
-    // Update all rendered tiles
-    for (final tile in _tileComponents.values) {
-      tile.updateTileState();
+    // Remove tiles that are far outside visible area (spatial culling)
+    // Keep a buffer of ~50 tiles outside visible area
+    final tilesToRemove = <Coord>[];
+    for (final coord in _tileComponents.keys) {
+      if (coord.x < minX - 50 || coord.x > maxX + 50 ||
+          coord.y < minY - 50 || coord.y > maxY + 50) {
+        tilesToRemove.add(coord);
+      }
+    }
+    
+    for (final coord in tilesToRemove) {
+      final tile = _tileComponents.remove(coord);
+      tile?.removeFromParent();
     }
   }
 
@@ -309,9 +338,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       (worldPos.y / _tileSize).floor(),
     );
 
-    rules.openTile(coord);
+    rules.openTile(coord, onExplosion: _recordChunkExplosion);
     _updateVisibleTiles();
-    _saveWorld(); // Save after tile interaction
+    _hasUnsavedChanges = true;
   }
 
   // Long press to flag tile
@@ -326,39 +355,58 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
     rules.flagTile(coord);
     _updateVisibleTiles();
-    _saveWorld(); // Save after tile interaction
+    _hasUnsavedChanges = true;
   }
 
-  // Check if chunk has recent explosion and get time remaining
+  // Check if chunk has recent explosion and get time remaining (optimized with chunk cache)
   (bool, Duration?) getChunkTimeoutInfo(Coord coord) {
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
+    final chunkKey = '${chunkCoord.chunkX},${chunkCoord.chunkY}';
+    
+    final explosionTime = _chunkExplosionTimes[chunkKey];
+    if (explosionTime == null) {
+      return (false, null);
+    }
+    
+    final now = DateTime.now();
+    final unlockTime = explosionTime.add(_chunkTimeoutDuration);
+    
+    if (now.isAfter(unlockTime)) {
+      // Timeout expired, clean up
+      _chunkExplosionTimes.remove(chunkKey);
+      return (false, null);
+    }
+    
+    final remaining = unlockTime.difference(now);
+    return (true, remaining);
+  }
+  
+  // Track explosion in chunk
+  void _recordChunkExplosion(Coord coord, DateTime timestamp) {
+    final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
+    final chunkKey = '${chunkCoord.chunkX},${chunkCoord.chunkY}';
+    
+    final existing = _chunkExplosionTimes[chunkKey];
+    if (existing == null || timestamp.isAfter(existing)) {
+      _chunkExplosionTimes[chunkKey] = timestamp;
+    }
+  }
+  
+  // Rebuild chunk explosion cache from storage (called on load)
+  void _rebuildChunkExplosionCache() {
+    _chunkExplosionTimes.clear();
     final now = DateTime.now();
     final cutoff = now.subtract(_chunkTimeoutDuration);
-
-    final chunkSize = minesweeperWorld.chunkSize;
-    final startX = chunkCoord.chunkX * chunkSize;
-    final startY = chunkCoord.chunkY * chunkSize;
-
-    DateTime? mostRecentExplosion;
-
-    for (int ly = 0; ly < chunkSize; ly++) {
-      for (int lx = 0; lx < chunkSize; lx++) {
-        final c = Coord(startX + lx, startY + ly);
-        final state = storage.get(c);
-        if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
-          if (mostRecentExplosion == null || state.openedAt!.isAfter(mostRecentExplosion)) {
-            mostRecentExplosion = state.openedAt;
-          }
-        }
+    
+    final tiles = storage.snapshot();
+    for (final entry in tiles.entries) {
+      final coord = entry.key;
+      final state = entry.value;
+      
+      if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
+        _recordChunkExplosion(coord, state.openedAt!);
       }
     }
-
-    if (mostRecentExplosion != null) {
-      final unlockTime = mostRecentExplosion.add(_chunkTimeoutDuration);
-      final remaining = unlockTime.difference(now);
-      return (true, remaining);
-    }
-    return (false, null);
   }
 
   bool isChunkTimedOut(Coord coord) {
@@ -370,6 +418,9 @@ class TileComponent extends PositionComponent {
   final Coord coord;
   final double tileSize;
   final MinesweeperGame game;
+  
+  // Cache text painters for hints to avoid recreating them every frame
+  static final Map<String, TextPainter> _textPainterCache = {};
 
   TileComponent({
     required this.coord,
@@ -378,6 +429,19 @@ class TileComponent extends PositionComponent {
   }) {
     position = Vector2(coord.x * tileSize, coord.y * tileSize);
     size = Vector2.all(tileSize);
+  }
+  
+  static TextPainter _getOrCreateTextPainter(String text, TextStyle style) {
+    final key = '$text-${style.color}-${style.fontSize}';
+    
+    if (!_textPainterCache.containsKey(key)) {
+      _textPainterCache[key] = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: TextDirection.ltr,
+      )..layout();
+    }
+    
+    return _textPainterCache[key]!;
   }
 
   void updateTileState() {
@@ -510,18 +574,14 @@ class TileComponent extends PositionComponent {
     if (state.flag == TileFlag.open && !state.exploded) {
       final hint = game.rules.getHint(coord);
       if (hint > 0) {
-        final textPainter = TextPainter(
-          text: TextSpan(
-            text: hint.toString(),
-            style: TextStyle(
-              color: _getHintColor(hint, isDarkMode),
-              fontSize: tileSize * 0.6,
-              fontWeight: FontWeight.bold,
-            ),
+        final textPainter = _getOrCreateTextPainter(
+          hint.toString(),
+          TextStyle(
+            color: _getHintColor(hint, isDarkMode),
+            fontSize: tileSize * 0.6,
+            fontWeight: FontWeight.bold,
           ),
-          textDirection: TextDirection.ltr,
         );
-        textPainter.layout();
         textPainter.paint(
           canvas,
           Offset(
@@ -544,6 +604,7 @@ class TileComponent extends PositionComponent {
         final seconds = timeRemaining.inSeconds % 60;
         final timerText = '$minutes:${seconds.toString().padLeft(2, '0')}';
         
+        // Note: Timer text changes every second, so we create new painter instead of caching
         final timerPainter = TextPainter(
           text: TextSpan(
             text: timerText,

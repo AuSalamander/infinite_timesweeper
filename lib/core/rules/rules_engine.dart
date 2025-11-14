@@ -9,6 +9,8 @@ class RulesEngine {
   final World world;
   final TileStorage storage;
   final Map<String, Map<Coord, int>> _chunkCache = {};
+  final List<String> _chunkCacheLRU = []; // LRU tracking
+  static const int _maxCachedChunks = 200; // Limit cache size
 
   RulesEngine(this.world, this.storage);
 
@@ -34,13 +36,29 @@ class RulesEngine {
     return false;
   }
 
-  /// Get chunk data with caching
+  /// Get chunk data with LRU caching
   Map<Coord, int> _getChunkData(int chunkX, int chunkY) {
     final key = '$chunkX,$chunkY';
-    if (!_chunkCache.containsKey(key)) {
-      _chunkCache[key] = generateChunk(world, chunkX, chunkY);
+    
+    if (_chunkCache.containsKey(key)) {
+      // Move to end of LRU list (most recently used)
+      _chunkCacheLRU.remove(key);
+      _chunkCacheLRU.add(key);
+      return _chunkCache[key]!;
     }
-    return _chunkCache[key]!;
+    
+    // Generate new chunk
+    final chunkData = generateChunk(world, chunkX, chunkY);
+    _chunkCache[key] = chunkData;
+    _chunkCacheLRU.add(key);
+    
+    // Evict oldest if cache is full
+    if (_chunkCacheLRU.length > _maxCachedChunks) {
+      final oldestKey = _chunkCacheLRU.removeAt(0);
+      _chunkCache.remove(oldestKey);
+    }
+    
+    return chunkData;
   }
 
   /// Get hint number for a coordinate (requires tile to be generated)
@@ -81,7 +99,7 @@ class RulesEngine {
   }
 
   /// Open a tile with flood-fill for hint 0 (iterative to avoid stack overflow)
-  void _openTileFloodFill(Coord startCoord, DateTime timestamp) {
+  void _openTileFloodFill(Coord startCoord, DateTime timestamp, {void Function(Coord, DateTime)? onExplosion}) {
     final queue = Queue<Coord>()..add(startCoord);
     final visited = <Coord>{};
     const maxTilesToOpen = 10000; // Prevent infinite expansion
@@ -112,6 +130,8 @@ class RulesEngine {
           type: TileEventType.explode,
           timestamp: timestamp,
         ));
+        // Notify about explosion
+        onExplosion?.call(coord, timestamp);
       } else {
         // Open the tile
         storage.applyEvent(TileEvent(
@@ -134,7 +154,7 @@ class RulesEngine {
   }
 
   /// Open a tile at the given coordinate
-  void openTile(Coord coord) {
+  void openTile(Coord coord, {void Function(Coord, DateTime)? onExplosion}) {
     final timestamp = DateTime.now();
     final state = storage.get(coord);
 
@@ -145,7 +165,7 @@ class RulesEngine {
 
     if (state.flag == TileFlag.closed) {
       // Open closed tile with iterative flood-fill
-      _openTileFloodFill(coord, timestamp);
+      _openTileFloodFill(coord, timestamp, onExplosion: onExplosion);
     } else if (state.flag == TileFlag.open) {
       // Chord: if hint equals flagged neighbors, open all non-flagged neighbors
       final hint = _getHint(coord);
@@ -156,7 +176,7 @@ class RulesEngine {
           for (final neighbor in _getNeighbors(coord)) {
             final neighborState = storage.get(neighbor);
             if (neighborState.flag == TileFlag.closed) {
-              _openTileFloodFill(neighbor, timestamp);
+              _openTileFloodFill(neighbor, timestamp, onExplosion: onExplosion);
             }
           }
         }
