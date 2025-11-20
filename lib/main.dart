@@ -85,20 +85,20 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
   // Theme brightness
   Brightness brightness = Brightness.light;
-  
+
   // Timer update tracking
   static const Duration _chunkTimeoutDuration = Duration(minutes: 5);
   double _timeSinceLastTimerUpdate = 0;
-  
+
   // Track explosion timestamps per chunk for performance
   final Map<String, DateTime> _chunkExplosionTimes = {};
-  
+
   // Dirty flag for saves
   bool _hasUnsavedChanges = false;
 
   @override
   Color backgroundColor() {
-    return brightness == Brightness.dark 
+    return brightness == Brightness.dark
         ? const Color(0xFF1A1A1A)  // Dark background
         : const Color(0xFF2E7D32);  // Light mode green background
   }
@@ -107,7 +107,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   Future<void> onLoad() async {
     // Initialize brightness from platform
     brightness = WidgetsBinding.instance.platformDispatcher.platformBrightness;
-    
+
     // Initialize storage first
     storage = TileStorage();
 
@@ -170,7 +170,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       if (loadedWorld != null) {
         minesweeperWorld = loadedWorld;
         print('Loaded world from: $_saveFilePath');
-        
+
         // Rebuild chunk explosion cache from loaded data
         _rebuildChunkExplosionCache();
         return;
@@ -214,15 +214,15 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
       _lastCameraPos = camera.position.clone();
       _lastZoom = camera.zoom;
     }
-    
+
     // Update timer display every second if there are active timeouts
     _timeSinceLastTimerUpdate += dt;
     if (_timeSinceLastTimerUpdate >= 1.0) {
       _timeSinceLastTimerUpdate = 0;
-      
+
       // Convert expired exploded tiles to flagged
       _convertExpiredExplosionsToFlags();
-      
+
       // Check if any visible tiles have active timeouts
       for (final tile in _tileComponents.values) {
         if (getChunkTimeoutInfo(tile.coord).$1) {
@@ -237,11 +237,11 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   void _convertExpiredExplosionsToFlags() {
     final now = DateTime.now();
     final tiles = storage.snapshot();
-    
+
     for (final entry in tiles.entries) {
       final coord = entry.key;
       final state = entry.value;
-      
+
       if (state.exploded && state.openedAt != null) {
         final unlockTime = state.openedAt!.add(_chunkTimeoutDuration);
         if (now.isAfter(unlockTime)) {
@@ -273,13 +273,13 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
     // Track which tiles should be visible
     final visibleCoords = <Coord>{};
-    
+
     // Add tiles that are visible but not yet rendered
     for (int y = minY; y <= maxY; y++) {
       for (int x = minX; x <= maxX; x++) {
         final coord = Coord(x, y);
         visibleCoords.add(coord);
-        
+
         if (!_tileComponents.containsKey(coord)) {
           final tile = TileComponent(
             coord: coord,
@@ -301,7 +301,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
         tilesToRemove.add(coord);
       }
     }
-    
+
     for (final coord in tilesToRemove) {
       final tile = _tileComponents.remove(coord);
       tile?.removeFromParent();
@@ -362,47 +362,47 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   (bool, Duration?) getChunkTimeoutInfo(Coord coord) {
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
     final chunkKey = '${chunkCoord.chunkX},${chunkCoord.chunkY}';
-    
+
     final explosionTime = _chunkExplosionTimes[chunkKey];
     if (explosionTime == null) {
       return (false, null);
     }
-    
+
     final now = DateTime.now();
     final unlockTime = explosionTime.add(_chunkTimeoutDuration);
-    
+
     if (now.isAfter(unlockTime)) {
       // Timeout expired, clean up
       _chunkExplosionTimes.remove(chunkKey);
       return (false, null);
     }
-    
+
     final remaining = unlockTime.difference(now);
     return (true, remaining);
   }
-  
+
   // Track explosion in chunk
   void _recordChunkExplosion(Coord coord, DateTime timestamp) {
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
     final chunkKey = '${chunkCoord.chunkX},${chunkCoord.chunkY}';
-    
+
     final existing = _chunkExplosionTimes[chunkKey];
     if (existing == null || timestamp.isAfter(existing)) {
       _chunkExplosionTimes[chunkKey] = timestamp;
     }
   }
-  
+
   // Rebuild chunk explosion cache from storage (called on load)
   void _rebuildChunkExplosionCache() {
     _chunkExplosionTimes.clear();
     final now = DateTime.now();
     final cutoff = now.subtract(_chunkTimeoutDuration);
-    
+
     final tiles = storage.snapshot();
     for (final entry in tiles.entries) {
       final coord = entry.key;
       final state = entry.value;
-      
+
       if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
         _recordChunkExplosion(coord, state.openedAt!);
       }
@@ -418,7 +418,7 @@ class TileComponent extends PositionComponent {
   final Coord coord;
   final double tileSize;
   final MinesweeperGame game;
-  
+
   // Cache text painters for hints to avoid recreating them every frame
   static final Map<String, TextPainter> _textPainterCache = {};
 
@@ -430,17 +430,17 @@ class TileComponent extends PositionComponent {
     position = Vector2(coord.x * tileSize, coord.y * tileSize);
     size = Vector2.all(tileSize);
   }
-  
+
   static TextPainter _getOrCreateTextPainter(String text, TextStyle style) {
     final key = '$text-${style.color}-${style.fontSize}';
-    
+
     if (!_textPainterCache.containsKey(key)) {
       _textPainterCache[key] = TextPainter(
         text: TextSpan(text: text, style: style),
         textDirection: TextDirection.ltr,
       )..layout();
     }
-    
+
     return _textPainterCache[key]!;
   }
 
@@ -502,7 +502,7 @@ class TileComponent extends PositionComponent {
       final dotPaint = Paint()
         ..color = Colors.red
         ..style = PaintingStyle.fill;
-      
+
       canvas.drawCircle(
         Offset(tileSize / 2, tileSize / 2),
         tileSize * 0.15,
@@ -515,7 +515,7 @@ class TileComponent extends PositionComponent {
       final glowPaint = Paint()
         ..color = (isDarkMode ? Colors.grey[800]! : Colors.grey[300]!).withAlpha(128)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
-      
+
       canvas.drawCircle(Offset(tileSize / 2, tileSize / 2), tileSize * 0.35, glowPaint);
     }
 
@@ -598,25 +598,25 @@ class TileComponent extends PositionComponent {
       final centerTileX = chunkSize ~/ 2;
       final centerTileY = chunkSize ~/ 2;
       final isCenterTile = (coord.x - chunkStartX) == centerTileX && (coord.y - chunkStartY) == centerTileY;
-      
+
       if (isCenterTile) {
         final minutes = timeRemaining.inMinutes;
         final seconds = timeRemaining.inSeconds % 60;
         final timerText = '$minutes:${seconds.toString().padLeft(2, '0')}';
-        
+
         // Note: Timer text changes every second, so we create new painter instead of caching
         final timerPainter = TextPainter(
           text: TextSpan(
             text: timerText,
             style: TextStyle(
               color: isDarkMode ? Colors.red[300] : Colors.red[700],
-              fontSize: tileSize * 1.2,
+              fontSize: tileSize * 0.5,
               fontWeight: FontWeight.bold,
               shadows: [
                 Shadow(
                   color: Colors.black.withAlpha(200),
-                  offset: const Offset(2, 2),
-                  blurRadius: 4,
+                  offset: const Offset(0, 0),
+                  blurRadius: 10,
                 ),
               ],
             ),
@@ -624,7 +624,7 @@ class TileComponent extends PositionComponent {
           textDirection: TextDirection.ltr,
         );
         timerPainter.layout();
-        
+
         // Draw centered on this tile
         timerPainter.paint(
           canvas,
