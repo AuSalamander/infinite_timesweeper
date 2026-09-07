@@ -8,17 +8,19 @@ import '../storage/storage.dart';
 class RulesEngine {
   final World world;
   final TileStorage storage;
-  final Map<String, Map<Coord, int>> _chunkCache = {};
-  final List<String> _chunkCacheLRU = []; // LRU tracking
+  // Chunk cache keyed by int (no per-lookup string allocs).
+  // Dart Maps are insertion-ordered: remove + re-insert = O(1) MRU mark.
+  final Map<int, Map<Coord, int>> _chunkCache = {};
   static const int _maxCachedChunks = 200; // Limit cache size
 
   RulesEngine(this.world, this.storage);
 
+  static int chunkKey(int chunkX, int chunkY) =>
+      ((chunkX & 0xffffffff) << 32) | (chunkY & 0xffffffff);
+
   /// Check if chunk currently has active timeout (explosion within last 5 minutes)
-  bool _hasActiveTimeout(int chunkX, int chunkY) {
-    final now = DateTime.now();
-    final cutoff = now.subtract(const Duration(minutes: 5));
-    
+  /// Pass in [now]/[cutoff] so flood-fill can hoist DateTime.now() out of the loop.
+  bool _hasActiveTimeout(int chunkX, int chunkY, DateTime now, DateTime cutoff) {
     final chunkSize = world.chunkSize;
     final startX = chunkX * chunkSize;
     final startY = chunkY * chunkSize;
@@ -36,28 +38,27 @@ class RulesEngine {
     return false;
   }
 
-  /// Get chunk data with LRU caching
+  /// Get chunk data with LRU caching (int keys, O(1) MRU refresh)
   Map<Coord, int> _getChunkData(int chunkX, int chunkY) {
-    final key = '$chunkX,$chunkY';
-    
-    if (_chunkCache.containsKey(key)) {
-      // Move to end of LRU list (most recently used)
-      _chunkCacheLRU.remove(key);
-      _chunkCacheLRU.add(key);
-      return _chunkCache[key]!;
+    final key = chunkKey(chunkX, chunkY);
+
+    final cached = _chunkCache[key];
+    if (cached != null) {
+      // Move to end (most recently used). Delete + re-insert is O(1).
+      _chunkCache.remove(key);
+      _chunkCache[key] = cached;
+      return cached;
     }
-    
+
     // Generate new chunk
     final chunkData = generateChunk(world, chunkX, chunkY);
     _chunkCache[key] = chunkData;
-    _chunkCacheLRU.add(key);
-    
-    // Evict oldest if cache is full
-    if (_chunkCacheLRU.length > _maxCachedChunks) {
-      final oldestKey = _chunkCacheLRU.removeAt(0);
-      _chunkCache.remove(oldestKey);
+
+    // Evict oldest if cache is full (first insertion-ordered key)
+    if (_chunkCache.length > _maxCachedChunks) {
+      _chunkCache.remove(_chunkCache.keys.first);
     }
-    
+
     return chunkData;
   }
 
@@ -99,10 +100,19 @@ class RulesEngine {
   }
 
   /// Open a tile with flood-fill for hint 0 (iterative to avoid stack overflow)
-  void _openTileFloodFill(Coord startCoord, DateTime timestamp, {void Function(Coord, DateTime)? onExplosion}) {
+  void _openTileFloodFill(Coord startCoord, DateTime timestamp,
+      {void Function(Coord, DateTime)? onExplosion,
+      required DateTime cutoff,
+      required Map<int, bool> timeoutMemo}) {
     final queue = Queue<Coord>()..add(startCoord);
     final visited = <Coord>{};
     const maxTilesToOpen = 10000; // Prevent infinite expansion
+
+    bool isChunkLocked(int chunkX, int chunkY) {
+      final key = chunkKey(chunkX, chunkY);
+      return timeoutMemo.putIfAbsent(
+          key, () => _hasActiveTimeout(chunkX, chunkY, timestamp, cutoff));
+    }
 
     while (queue.isNotEmpty && visited.length < maxTilesToOpen) {
       final coord = queue.removeFirst();
@@ -116,8 +126,10 @@ class RulesEngine {
       if (state.flag != TileFlag.closed) continue;
 
       // Check if chunk has active timeout - prevent opening if so
+      // (memoized per chunk for this flood-fill; hints themselves are
+      // immutable and served from _chunkCache, never recomputed per neighbor)
       final chunkCoord = coord.toChunk(world.chunkSize);
-      if (_hasActiveTimeout(chunkCoord.chunkX, chunkCoord.chunkY)) {
+      if (isChunkLocked(chunkCoord.chunkX, chunkCoord.chunkY)) {
         continue;
       }
 
@@ -155,7 +167,10 @@ class RulesEngine {
 
   /// Open a tile at the given coordinate
   void openTile(Coord coord, {void Function(Coord, DateTime)? onExplosion}) {
+    // Hoisted: one clock read per gesture; shared by all flood-fills below.
     final timestamp = DateTime.now();
+    final cutoff = timestamp.subtract(const Duration(minutes: 5));
+    final timeoutMemo = <int, bool>{};
     final state = storage.get(coord);
 
     if (state.flag == TileFlag.flagged) {
@@ -165,7 +180,8 @@ class RulesEngine {
 
     if (state.flag == TileFlag.closed) {
       // Open closed tile with iterative flood-fill
-      _openTileFloodFill(coord, timestamp, onExplosion: onExplosion);
+      _openTileFloodFill(coord, timestamp,
+          onExplosion: onExplosion, cutoff: cutoff, timeoutMemo: timeoutMemo);
     } else if (state.flag == TileFlag.open) {
       // Chord: if hint equals flagged neighbors, open all non-flagged neighbors
       final hint = _getHint(coord);
@@ -176,7 +192,10 @@ class RulesEngine {
           for (final neighbor in _getNeighbors(coord)) {
             final neighborState = storage.get(neighbor);
             if (neighborState.flag == TileFlag.closed) {
-              _openTileFloodFill(neighbor, timestamp, onExplosion: onExplosion);
+              _openTileFloodFill(neighbor, timestamp,
+                  onExplosion: onExplosion,
+                  cutoff: cutoff,
+                  timeoutMemo: timeoutMemo);
             }
           }
         }

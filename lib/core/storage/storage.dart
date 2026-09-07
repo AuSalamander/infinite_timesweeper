@@ -84,6 +84,10 @@ class TileStorage {
     return Map.from(_tiles);
   }
 
+  /// Direct access to entries without copying (for hot loops).
+  /// Do not mutate during iteration.
+  Iterable<MapEntry<Coord, TileState>> get entries => _tiles.entries;
+
   /// Save storage to JSON file
   Future<void> saveToFile(String filePath, {World? world}) async {
     final data = {
