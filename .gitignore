@@ -50,3 +50,6 @@ worlds/
 android/key.properties
 
 android/app/au_salamander-key.jks
+
+# FVM Version Cache
+.fvm/
