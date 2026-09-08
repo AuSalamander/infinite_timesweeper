@@ -1,5 +1,6 @@
 import 'dart:async' as dart_async;
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flame/game.dart';
 import 'package:flame/components.dart';
@@ -10,6 +11,7 @@ import 'core/models/tile_state.dart';
 import 'core/models/world.dart' as core_models;
 import 'core/storage/storage.dart';
 import 'core/rules/rules_engine.dart';
+import 'core/perf/frame_stats.dart';
 
 void main() {
   runApp(const MinesweeperApp());
@@ -57,8 +59,56 @@ class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObse
       // Update brightness after game is created
       Future.microtask(() => _updateGameBrightness());
     }
-    return GameWidget<MinesweeperGame>.controlled(
-      gameFactory: () => _game!,
+    final game = _game!;
+    // Note: no MaterialApp in this app, so provide Directionality explicitly
+    // for the overlay Text (GameWidget alone never needed it).
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: Stack(
+      children: [
+        Positioned.fill(
+          child: GameWidget<MinesweeperGame>.controlled(
+            gameFactory: () => game,
+          ),
+        ),
+        // On-screen perf readout (debug + profile only; game pushes
+        // a new string every ~2s, see MinesweeperGame.update).
+        // SafeArea keeps it below the Android status bar / notch.
+        Positioned(
+          top: 0,
+          left: 8,
+          right: 8,
+          child: SafeArea(
+            child: IgnorePointer(
+              child: ValueListenableBuilder<String>(
+                valueListenable: game.perfOverlay,
+                builder: (context, text, _) {
+                  if (kReleaseMode) return const SizedBox.shrink();
+                  return Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withAlpha(160),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      text,
+                      softWrap: true,
+                      maxLines: 3,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ],
+      ),
     );
   }
 }
@@ -96,6 +146,13 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
   // Dirty flag for saves
   bool _hasUnsavedChanges = false;
+
+  // Debug+profile perf counters (zero-cost in release, see FrameStats).
+  // perfOverlay drives the on-screen readout; updated ~every 2s.
+  final FrameStats perf = FrameStats();
+  final ValueNotifier<String> perfOverlay =
+      ValueNotifier<String>('PERF starting…');
+  bool _isLoaded = false;
 
   static int chunkKey(int chunkX, int chunkY) =>
       ((chunkX & 0xffffffff) << 32) | (chunkY & 0xffffffff);
@@ -138,6 +195,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     // One renderer draws every visible tile; no per-tile components.
     _boardRenderer = BoardRenderer(game: this);
     await gameWorld.add(_boardRenderer!);
+    _isLoaded = true;
 
     // Set up auto-save every 30 seconds (only if changes)
     _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) {
@@ -211,6 +269,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   @override
   void onRemove() {
     _autoSaveTimer?.cancel();
+    perfOverlay.dispose();
     // Attempt final save (fire and forget as we're closing)
     _saveWorld();
     super.onRemove();
@@ -222,6 +281,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 
     // Single clock read per frame; renderer + timeout logic reuse it.
     _frameNow = DateTime.now();
+    perf.recordFrame(dt);
 
     // 1s throttle for timeout expiry (no per-tile per-frame scans).
     _timeSinceLastTimerUpdate += dt;
@@ -231,6 +291,16 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
         _pruneExpiredChunkTimes();
         _convertExpiredExplosionsToFlags();
       }
+    }
+
+    if (!_isLoaded) return;
+    final report = perf.maybeReport(dt,
+        storedTiles: storage.count,
+        chunkHits: rules.cacheHits,
+        chunkMisses: rules.cacheMisses);
+    if (report != null && !kReleaseMode) {
+      debugPrint(report);
+      perfOverlay.value = report;
     }
   }
 
@@ -389,9 +459,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
 /// Single batched renderer: draws every visible tile in one component.
 ///
 /// Replaces the old one-Component-per-tile approach (which created 60k-250k
-/// components when zoomed out). Detail that would be subpixel on screen
-/// (hint text, glow, thin borders below ~6-10px on-screen) is skipped —
-/// at that scale it contributes <1px and is visually identical.
+/// components when zoomed out). Only hint/timer text is skipped when it would
+/// be subpixel (<10px on-screen); tiles, blurred glow, tile borders and the
+/// chunk grid are always drawn (visual baseline for measurement).
 class BoardRenderer extends Component {
   final MinesweeperGame game;
 
@@ -409,10 +479,14 @@ class BoardRenderer extends Component {
     ..color = const Color(0xFF81C784).withAlpha((255 * 0.3).toInt());
   static final Paint _timedOutDimDark = Paint()
     ..color = Colors.black.withAlpha((255 * 0.3).toInt());
-  // Glow without MaskFilter.blur (pre-baked look: translucent halo, no
-  // software fallback). Same placement/color as before, cheap blit.
-  static final Paint _glowLight = Paint()..color = Colors.grey[300]!.withAlpha(110);
-  static final Paint _glowDark = Paint()..color = Colors.grey[800]!.withAlpha(110);
+  // Glow with original blur (shared static paints: no per-frame alloc,
+  // blur raster cost itself is what we will measure in step 1).
+  static final Paint _glowLight = Paint()
+    ..color = Colors.grey[300]!.withAlpha(128)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
+  static final Paint _glowDark = Paint()
+    ..color = Colors.grey[800]!.withAlpha(128)
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
   static final Paint _redDot = Paint()
     ..color = Colors.red
     ..style = PaintingStyle.fill;
@@ -465,6 +539,7 @@ class BoardRenderer extends Component {
 
   @override
   void render(Canvas canvas) {
+    final Stopwatch? sw = kReleaseMode ? null : (Stopwatch()..start());
     final viewfinder = game.cameraComponent.viewfinder;
     final zoom = viewfinder.zoom;
     final cameraPos = viewfinder.position;
@@ -480,10 +555,10 @@ class BoardRenderer extends Component {
     final minY = ((cameraPos.y - screenHeight / 2) / tileSize).floor() - 1;
     final maxY = ((cameraPos.y + screenHeight / 2) / tileSize).ceil() + 1;
 
-    // On-screen tile size drives detail: below these thresholds the detail
-    // is subpixel and skipping it is visually lossless.
+    // On-screen tile size drives text detail only. Borders/glow/dots are
+    // always drawn (visual baseline); hint + timer text below ~10px
+    // on-screen is subpixel and skipped. Chunk grid is always drawn.
     final tileScreen = tileSize * zoom;
-    final drawDetail = tileScreen >= 6.0;
     final drawText = tileScreen >= 10.0;
 
     final hasTimeouts = game.hasPendingTimeouts;
@@ -529,8 +604,6 @@ class BoardRenderer extends Component {
         }
         canvas.drawRect(rect, paint);
 
-        if (!drawDetail) continue;
-
         final cx = x * tileSize + tileSize / 2;
         final cy = y * tileSize + tileSize / 2;
 
@@ -538,7 +611,7 @@ class BoardRenderer extends Component {
           canvas.drawCircle(Offset(cx, cy), tileSize * 0.15, _redDot);
         }
 
-        // Glow: solid halo, no MaskFilter. Same center/radius/theme as before.
+        // Glow: original blurred halo, always drawn (baseline for measurement).
         if (state.flag == TileFlag.open && !state.exploded) {
           canvas.drawCircle(
               Offset(cx, cy), tileSize * 0.35, isDarkMode ? _glowDark : _glowLight);
@@ -590,7 +663,8 @@ class BoardRenderer extends Component {
     }
 
     // Chunk grid as long lines (dozens of lines, not per-tile segments).
-    if (drawDetail) {
+    // Always drawn.
+    {
       final minChunkX = MinesweeperGame.chunkOf(minX, chunkSize);
       final maxChunkX = MinesweeperGame.chunkOf(maxX, chunkSize);
       final minChunkY = MinesweeperGame.chunkOf(minY, chunkSize);
@@ -607,6 +681,11 @@ class BoardRenderer extends Component {
         final dy = cy * chunkSize * tileSize;
         canvas.drawLine(Offset(left, dy), Offset(right, dy), chunkBorderPaint);
       }
+    }
+    if (sw != null) {
+      sw.stop();
+      final count = (maxX - minX + 1) * (maxY - minY + 1);
+      game.perf.recordRender(sw.elapsedMicroseconds / 1000.0, count, zoom);
     }
   }
 

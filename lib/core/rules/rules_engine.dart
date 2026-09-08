@@ -13,6 +13,10 @@ class RulesEngine {
   final Map<int, Map<Coord, int>> _chunkCache = {};
   static const int _maxCachedChunks = 200; // Limit cache size
 
+  // Counters for perf logging (cheap ints, read by FrameStats report).
+  int cacheHits = 0;
+  int cacheMisses = 0;
+
   RulesEngine(this.world, this.storage);
 
   static int chunkKey(int chunkX, int chunkY) =>
@@ -47,11 +51,13 @@ class RulesEngine {
       // Move to end (most recently used). Delete + re-insert is O(1).
       _chunkCache.remove(key);
       _chunkCache[key] = cached;
+      cacheHits++;
       return cached;
     }
 
     // Generate new chunk
     final chunkData = generateChunk(world, chunkX, chunkY);
+    cacheMisses++;
     _chunkCache[key] = chunkData;
 
     // Evict oldest if cache is full (first insertion-ordered key)
