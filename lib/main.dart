@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flame/game.dart';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
+import 'package:flame/input.dart';
 import 'package:path_provider/path_provider.dart';
 import 'core/models/coord.dart';
 import 'core/models/tile_state.dart';
@@ -113,7 +114,7 @@ class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObse
   }
 }
 
-class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, LongPressDetector {
+class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPressDetector {
   late core_models.World minesweeperWorld;
   late TileStorage storage;
   late RulesEngine rules;
@@ -122,6 +123,23 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
   double _startZoom = 1.0;
   final double _tileSize = 32.0;
   double get tileSize => _tileSize;
+
+  // Manual double-tap: open only when two consecutive taps hit the same cell.
+  // (Flutter's DoubleTapGestureRecognizer allows ~100px slop, which spans
+  // several tiles when zoomed out, so we detect the double-tap ourselves
+  // via TapDetector.)
+  static const Duration _doubleTapTimeout = Duration(milliseconds: 300);
+  Coord? _pendingTapCoord;
+  DateTime? _pendingTapTime;
+
+  Coord _coordFromWidgetPos(Vector2 widgetPos) {
+    final worldPos = cameraComponent.viewfinder.position +
+        (widgetPos - size / 2) / cameraComponent.viewfinder.zoom;
+    return Coord(
+      (worldPos.x / _tileSize).floor(),
+      (worldPos.y / _tileSize).floor(),
+    );
+  }
 
   // Single batched renderer (replaces per-tile components).
   BoardRenderer? _boardRenderer;
@@ -283,6 +301,13 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     _frameNow = DateTime.now();
     perf.recordFrame(dt);
 
+    // Expire a single pending tap (arms the manual double-tap only briefly).
+    if (_pendingTapTime != null &&
+        _frameNow.difference(_pendingTapTime!) > _doubleTapTimeout) {
+      _pendingTapCoord = null;
+      _pendingTapTime = null;
+    }
+
     // 1s throttle for timeout expiry (no per-tile per-frame scans).
     _timeSinceLastTimerUpdate += dt;
     if (_timeSinceLastTimerUpdate >= 1.0) {
@@ -364,30 +389,34 @@ class MinesweeperGame extends FlameGame with ScaleDetector, DoubleTapDetector, L
     }
   }
 
-  // Double tap to open tile
+  // Double tap (two consecutive TapDetector taps on the same cell) to open tile.
   @override
-  void onDoubleTapDown(TapDownInfo info) {
-    final worldPos = cameraComponent.viewfinder.position +
-        (info.eventPosition.widget - size / 2) / cameraComponent.viewfinder.zoom;
-    final coord = Coord(
-      (worldPos.x / _tileSize).floor(),
-      (worldPos.y / _tileSize).floor(),
-    );
-
-    rules.openTile(coord, onExplosion: _recordChunkExplosion);
-    // Renderer reads storage live; no rebuild needed.
-    _hasUnsavedChanges = true;
+  void onTapUp(TapUpInfo info) {
+    final coord = _coordFromWidgetPos(info.eventPosition.widget);
+    final now = DateTime.now();
+    final prevCoord = _pendingTapCoord;
+    final prevTime = _pendingTapTime;
+    if (prevCoord != null &&
+        prevTime != null &&
+        prevCoord == coord &&
+        now.difference(prevTime) <= _doubleTapTimeout) {
+      // Second tap on the same cell: consume and open.
+      _pendingTapCoord = null;
+      _pendingTapTime = null;
+      rules.openTile(coord, onExplosion: _recordChunkExplosion);
+      // Renderer reads storage live; no rebuild needed.
+      _hasUnsavedChanges = true;
+    } else {
+      // First tap (or different cell / expired): arm for the next tap.
+      _pendingTapCoord = coord;
+      _pendingTapTime = now;
+    }
   }
 
   // Long press to flag tile
   @override
   void onLongPressStart(LongPressStartInfo info) {
-    final worldPos = cameraComponent.viewfinder.position +
-        (info.eventPosition.widget - size / 2) / cameraComponent.viewfinder.zoom;
-    final coord = Coord(
-      (worldPos.x / _tileSize).floor(),
-      (worldPos.y / _tileSize).floor(),
-    );
+    final coord = _coordFromWidgetPos(info.eventPosition.widget);
 
     rules.flagTile(coord);
     _hasUnsavedChanges = true;
