@@ -313,8 +313,14 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
     if (_timeSinceLastTimerUpdate >= 1.0) {
       _timeSinceLastTimerUpdate = 0;
       if (hasPendingTimeouts) {
+        // Convert BEFORE pruning: pruning empties _chunkExplosionTimes,
+        // and conversion early-outs on empty cache. The old order
+        // (prune -> convert) dropped the last pending chunk without
+        // ever flagging its mines, leaving black tiles until reload.
+        if (_convertExpiredExplosionsToFlags()) {
+          _hasUnsavedChanges = true;
+        }
         _pruneExpiredChunkTimes();
-        _convertExpiredExplosionsToFlags();
       }
     }
 
@@ -345,11 +351,12 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
   // Convert exploded tiles to flagged after timeout expires.
   // Skipped entirely when no pending timeouts (the common late-game case
   // is thousands of open tiles but zero pending explosions).
-  void _convertExpiredExplosionsToFlags({bool forceFullScan = false}) {
+  // Returns true if at least one tile was converted (caller marks dirty).
+  bool _convertExpiredExplosionsToFlags({bool forceFullScan = false}) {
     if (!forceFullScan && _chunkExplosionTimes.isEmpty) {
       // Empty cache means nothing pending. (Stale tiles from disk are
       // handled by the forced pass in _loadWorld.)
-      return;
+      return false;
     }
     final now = _frameNow;
     final expired = <Coord>[];
@@ -367,6 +374,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
         const TileState(flag: TileFlag.flagged, exploded: false),
       );
     }
+    return expired.isNotEmpty;
   }
 
   // Scale/Pan gestures
@@ -424,6 +432,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
 
   // Check if chunk has recent explosion and get time remaining.
   // Uses the shared _frameNow; never calls DateTime.now() per tile.
+  // Read-only: never prunes here, otherwise the render hot loop could
+  // empty _chunkExplosionTimes before update() converts expired mines
+  // to flags (black tile until reload). Only update() prunes.
   (bool, Duration?) getChunkTimeoutInfo(Coord coord) {
     if (_chunkExplosionTimes.isEmpty) return (false, null);
     final chunkCoord = coord.toChunk(minesweeperWorld.chunkSize);
@@ -434,7 +445,6 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
 
     final unlockTime = explosionTime.add(_chunkTimeoutDuration);
     if (_frameNow.isAfter(unlockTime)) {
-      _chunkExplosionTimes.remove(key);
       return (false, null);
     }
     return (true, unlockTime.difference(_frameNow));
@@ -450,6 +460,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
 
   // Chunk-level query: no tile state involved, so the lock badge never
   // depends on what the center tile happens to be (open/flagged/etc).
+  // Read-only (see getChunkTimeoutInfo): only update() prunes.
   (bool, Duration?) getChunkTimeoutByChunk(int chunkX, int chunkY) {
     if (_chunkExplosionTimes.isEmpty) return (false, null);
     final key = chunkKey(chunkX, chunkY);
@@ -457,7 +468,6 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
     if (explosionTime == null) return (false, null);
     final unlockTime = explosionTime.add(_chunkTimeoutDuration);
     if (_frameNow.isAfter(unlockTime)) {
-      _chunkExplosionTimes.remove(key);
       return (false, null);
     }
     return (true, unlockTime.difference(_frameNow));
@@ -629,8 +639,18 @@ class BoardRenderer extends Component {
           isTimedOut = game.getChunkTimeoutInfoXY(x, y).$1;
         }
 
+        // Per-tile expiry fallback: if this mine's own 5min already passed
+        // but update()'s 1s conversion tick hasn't run yet, render it as
+        // flagged instead of black. Covers any scheduling race.
+        final bool tileExpired = state.exploded &&
+            state.openedAt != null &&
+            game.frameNow.isAfter(state.openedAt!
+                .add(MinesweeperGame._chunkTimeoutDuration));
+
         final Paint paint;
-        if (state.exploded && !isTimedOut) {
+        if (tileExpired) {
+          paint = _flagged;
+        } else if (state.exploded && !isTimedOut) {
           paint = _exploded;
         } else if (state.flag == TileFlag.flagged) {
           paint = _flagged;
