@@ -444,7 +444,15 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
   (bool, Duration?) getChunkTimeoutInfoXY(int tileX, int tileY) {
     if (_chunkExplosionTimes.isEmpty) return (false, null);
     final cs = minesweeperWorld.chunkSize;
-    final key = chunkKey(chunkOf(tileX, cs), chunkOf(tileY, cs));
+    return getChunkTimeoutByChunk(
+        chunkOf(tileX, cs), chunkOf(tileY, cs));
+  }
+
+  // Chunk-level query: no tile state involved, so the lock badge never
+  // depends on what the center tile happens to be (open/flagged/etc).
+  (bool, Duration?) getChunkTimeoutByChunk(int chunkX, int chunkY) {
+    if (_chunkExplosionTimes.isEmpty) return (false, null);
+    final key = chunkKey(chunkX, chunkY);
     final explosionTime = _chunkExplosionTimes[key];
     if (explosionTime == null) return (false, null);
     final unlockTime = explosionTime.add(_chunkTimeoutDuration);
@@ -531,6 +539,20 @@ class BoardRenderer extends Component {
     ..color = const Color(0xFF9C27B0)
     ..style = PaintingStyle.stroke
     ..strokeWidth = 2.5;
+  static final Paint _chunkBorderLocked = Paint()
+    ..color = const Color(0xFFE53935)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 4.0;
+  // Big lock badge: dark pill + red outline, identical in both themes so
+  // the locked chunk reads instantly.
+  static final Paint _lockBadgeBg = Paint()
+    ..color = const Color(0xDD111111);
+  static final Paint _lockBadgeBorder = Paint()
+    ..color = const Color(0xFFE53935)
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 3.0;
+  static final Paint _lockedChunkShade = Paint()
+    ..color = const Color(0x55000000);
 
   // Cache text painters for hints (immutable per hint value/theme).
   static final Map<String, TextPainter> _textPainterCache = {};
@@ -602,15 +624,9 @@ class BoardRenderer extends Component {
         final rect = Rect.fromLTWH(x * tileSize, y * tileSize, tileSize, tileSize);
 
         bool isTimedOut = false;
-        Duration? timeRemaining;
-        if (hasTimeouts && state.flag == TileFlag.closed) {
-          final t = game.getChunkTimeoutInfoXY(x, y);
-          isTimedOut = t.$1;
-          timeRemaining = t.$2;
-        } else if (hasTimeouts && state.exploded) {
-          final t = game.getChunkTimeoutInfoXY(x, y);
-          isTimedOut = t.$1;
-          timeRemaining = t.$2;
+        if (hasTimeouts &&
+            (state.flag == TileFlag.closed || state.exploded)) {
+          isTimedOut = game.getChunkTimeoutInfoXY(x, y).$1;
         }
 
         final Paint paint;
@@ -668,36 +684,16 @@ class BoardRenderer extends Component {
             );
           }
         }
-
-        // Timer on chunk center tile only.
-        if (drawText && isTimedOut && timeRemaining != null) {
-          final chunkX = MinesweeperGame.chunkOf(x, chunkSize);
-          final chunkY = MinesweeperGame.chunkOf(y, chunkSize);
-          final centerLX = chunkSize ~/ 2;
-          final centerLY = chunkSize ~/ 2;
-          if (x - chunkX * chunkSize == centerLX &&
-              y - chunkY * chunkSize == centerLY) {
-            final minutes = timeRemaining.inMinutes;
-            final seconds = timeRemaining.inSeconds % 60;
-            final timerText = '$minutes:${seconds.toString().padLeft(2, '0')}';
-            final tp = _timerPainter(
-              timerText,
-              (isDarkMode ? Colors.red[300] : Colors.red[700])!,
-              tileSize * 0.5,
-            );
-            tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
-          }
-        }
       }
     }
 
     // Chunk grid as long lines (dozens of lines, not per-tile segments).
-    // Always drawn.
+    // Always drawn. Locked chunks get a red outline.
+    final minChunkX = MinesweeperGame.chunkOf(minX, chunkSize);
+    final maxChunkX = MinesweeperGame.chunkOf(maxX, chunkSize);
+    final minChunkY = MinesweeperGame.chunkOf(minY, chunkSize);
+    final maxChunkY = MinesweeperGame.chunkOf(maxY, chunkSize);
     {
-      final minChunkX = MinesweeperGame.chunkOf(minX, chunkSize);
-      final maxChunkX = MinesweeperGame.chunkOf(maxX, chunkSize);
-      final minChunkY = MinesweeperGame.chunkOf(minY, chunkSize);
-      final maxChunkY = MinesweeperGame.chunkOf(maxY, chunkSize);
       final left = minX * tileSize;
       final right = (maxX + 1) * tileSize;
       final top = minY * tileSize;
@@ -711,10 +707,106 @@ class BoardRenderer extends Component {
         canvas.drawLine(Offset(left, dy), Offset(right, dy), chunkBorderPaint);
       }
     }
+
+    // Big lock badges: one per locked chunk, independent of any single
+    // tile state. Fixes the old bug where the timer lived on the center
+    // tile and vanished when that tile was open/flagged, zoomed out
+    // (drawText == false), or simply off-screen.
+    if (hasTimeouts) {
+      _drawLockBadges(
+        canvas,
+        minChunkX: minChunkX,
+        maxChunkX: maxChunkX,
+        minChunkY: minChunkY,
+        maxChunkY: maxChunkY,
+      );
+    }
     if (sw != null) {
       sw.stop();
       final count = (maxX - minX + 1) * (maxY - minY + 1);
       game.perf.recordRender(sw.elapsedMicroseconds / 1000.0, count, zoom);
+    }
+  }
+
+  void _drawLockBadges(
+    Canvas canvas, {
+    required int minChunkX,
+    required int maxChunkX,
+    required int minChunkY,
+    required int maxChunkY,
+  }) {
+    final tileSize = game.tileSize;
+    final chunkSize = game.minesweeperWorld.chunkSize;
+    final viewfinder = game.cameraComponent.viewfinder;
+    final zoom = viewfinder.zoom;
+    // Badge is ~3 tiles wide, so keep it down to ~48px chunk on screen
+    // (far more forgiving than the old per-tile 10px text threshold).
+    if (chunkSize * tileSize * zoom < 48.0) return;
+
+    final cameraPos = viewfinder.position;
+    final viewW = game.size.x / zoom;
+    final viewH = game.size.y / zoom;
+    final viewLeft = cameraPos.x - viewW / 2;
+    final viewRight = cameraPos.x + viewW / 2;
+    final viewTop = cameraPos.y - viewH / 2;
+    final viewBottom = cameraPos.y + viewH / 2;
+    final margin = tileSize * 2.0;
+    final fontSize = tileSize * 1.1;
+
+    double clampOrCenter(double v, double lo, double hi, double center) {
+      if (lo >= hi) return center;
+      return v.clamp(lo, hi).toDouble();
+    }
+
+    final viewCx = (viewLeft + viewRight) / 2;
+    final viewCy = (viewTop + viewBottom) / 2;
+
+    for (int cyy = minChunkY; cyy <= maxChunkY; cyy++) {
+      for (int cxx = minChunkX; cxx <= maxChunkX; cxx++) {
+        final timeout = game.getChunkTimeoutByChunk(cxx, cyy);
+        if (!timeout.$1 || timeout.$2 == null) continue;
+
+        // Expressive lock: shaded chunk + red outline.
+        final chunkRect = Rect.fromLTWH(
+          cxx * chunkSize * tileSize,
+          cyy * chunkSize * tileSize,
+          chunkSize * tileSize,
+          chunkSize * tileSize,
+        );
+        canvas.drawRect(chunkRect, _lockedChunkShade);
+        canvas.drawRect(chunkRect, _chunkBorderLocked);
+
+        final remaining = timeout.$2!;
+        final minutes = remaining.inMinutes;
+        final seconds = remaining.inSeconds % 60;
+        final text =
+            '$minutes:${seconds.toString().padLeft(2, '0')}';
+        final tp = _timerPainter(text, Colors.white, fontSize);
+
+        // Clamp to the visible viewport so the badge stays on screen even
+        // when the chunk center itself is scrolled out of view.
+        final chunkCx = (cxx * chunkSize + chunkSize / 2) * tileSize;
+        final chunkCy = (cyy * chunkSize + chunkSize / 2) * tileSize;
+        final badgeCx = clampOrCenter(
+            chunkCx, viewLeft + margin, viewRight - margin, viewCx);
+        final badgeCy = clampOrCenter(
+            chunkCy, viewTop + margin, viewBottom - margin, viewCy);
+
+        final padH = tileSize * 0.55;
+        final padV = tileSize * 0.35;
+        final bgRect = RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(badgeCx, badgeCy),
+            width: tp.width + padH * 2,
+            height: tp.height + padV * 2,
+          ),
+          Radius.circular(tileSize * 0.5),
+        );
+        canvas.drawRRect(bgRect, _lockBadgeBg);
+        canvas.drawRRect(bgRect, _lockBadgeBorder);
+        tp.paint(
+            canvas, Offset(badgeCx - tp.width / 2, badgeCy - tp.height / 2));
+      }
     }
   }
 
