@@ -23,7 +23,9 @@ You can obtain builds from the repository releases (GitHub), but the recommended
 
 (If you prefer manual installs: grab the APK from this repo's **Releases** page on GitHub.)
 
-SHA256: 74:94:48:91:48:60:36:9D:EA:77:38:3B:74:5E:5D:FC:36:8C:3E:BC:03:24:57:61:5F:56:C4:E0:BC:82:6B:C4
+SHA256: 57:00:E7:A0:BE:90:0B:91:F5:A1:59:B7:3C:78:59:CA:19:AF:95:24:1E:73:53:B7:37:00:C7:7E:08:30:92:23
+
+> **Signing migration:** builds from the `0.0.6` beta series onward use a new signing certificate. Uninstall the previous app before installing these builds; Android and Obtainium cannot update across different signatures. Later updates signed by CI will work normally.
 
 
 
@@ -61,6 +63,34 @@ You can install Obtainium itself from several sources:
 2. On your device, open the APK file to install.
 3. Allow **Install unknown apps** if Android requests it.
 4. Confirm **Install**.
+
+
+
+## Android CI releases
+
+The Android workflow builds and signs an APK on GitHub, then publishes it to GitHub Releases. No local Flutter or Android SDK is needed to publish a build.
+
+### One-time setup
+
+1. Install and authenticate the [GitHub CLI](https://cli.github.com/) with an account that can edit this repository's secrets and run workflows: `gh auth login`.
+2. Keep the existing signing files at `android/key.properties` and the keystore path referenced by it, then run:
+
+   ```sh
+   ./scripts/setup-release-secrets.sh
+   ```
+
+   This uploads the signing configuration as repository secrets without printing any passwords.
+
+### Publish
+
+Commit and push the code first, then run:
+
+```sh
+./scripts/publish.sh --beta     # APK + prerelease, tagged vX.Y.Z-beta.N
+./scripts/publish.sh --release  # APK + stable release, tagged vX.Y.Z
+```
+
+The version comes from `pubspec.yaml`; `N` uses the GitHub workflow run number. The Android `versionCode` is derived from the build time so it increases automatically and stays above legacy builds. Publishing is supported from the default branch only. After a stable release, bump `version:` in `pubspec.yaml` before publishing either channel. Obtainium configurations with **Include prereleases** enabled can discover beta builds automatically.
 
 
 

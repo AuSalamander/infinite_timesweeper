@@ -1,0 +1,134 @@
+name: Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        required: true
+        type: choice
+        options:
+          - beta
+          - release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CHANNEL: ${{ inputs.channel }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Test
+        run: flutter test
+
+      - name: Prepare signing configuration
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Set the ANDROID_KEYSTORE_BASE64 repository secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Set the ANDROID_KEYSTORE_PASSWORD repository secret}"
+          : "${ANDROID_KEY_ALIAS:?Set the ANDROID_KEY_ALIAS repository secret}"
+          : "${ANDROID_KEY_PASSWORD:?Set the ANDROID_KEY_PASSWORD repository secret}"
+
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          {
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/release.jks"
+          } > android/key.properties
+
+      - name: Determine version and tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base_version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml | head -n 1)"
+          if [[ -z "$base_version" ]]; then
+            echo "Could not read the version from pubspec.yaml" >&2
+            exit 1
+          fi
+
+          if [[ "$CHANNEL" == "beta" ]]; then
+            if gh release view "v$base_version" > /dev/null 2>&1; then
+              echo "Stable release v$base_version already exists. Bump the version in pubspec.yaml before publishing a new beta." >&2
+              exit 1
+            fi
+            version="$base_version-beta.$GITHUB_RUN_NUMBER"
+            prerelease=true
+          else
+            version="$base_version"
+            prerelease=false
+          fi
+          tag="v$version"
+          build_number="$(( $(date +%s) - 1577836800 ))"
+
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists. Bump the version in pubspec.yaml first." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "prerelease=$prerelease"
+            echo "build_number=$build_number"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        run: |
+          flutter build apk \
+            --release \
+            --build-name="${{ steps.release.outputs.version }}" \
+            --build-number="${{ steps.release.outputs.build_number }}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="infinite_timesweeper-${{ steps.release.outputs.version }}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "$apk"
+
+          release_args=(
+            --target "$GITHUB_SHA"
+            --title "Infinite TimeSweeper ${{ steps.release.outputs.version }}"
+            --generate-notes
+          )
+          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          gh release create "${{ steps.release.outputs.tag }}" "$apk" "${release_args[@]}"
