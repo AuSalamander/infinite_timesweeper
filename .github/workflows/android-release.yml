@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      CHANNEL: ${{ inputs.channel }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
 
     steps:
       - name: Check out repository
@@ -83,7 +83,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$CHANNEL" == "beta" ]]; then
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
             if gh release view "v$base_version" > /dev/null 2>&1; then
               echo "Stable release v$base_version already exists. Bump the version in pubspec.yaml before publishing a new beta." >&2
               exit 1
