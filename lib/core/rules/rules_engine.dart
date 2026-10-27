@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'package:flutter/foundation.dart';
 import '../models/coord.dart';
 import '../models/tile_state.dart';
 import '../models/world.dart';
@@ -19,22 +20,49 @@ class RulesEngine {
 
   RulesEngine(this.world, this.storage);
 
+  /// Clears generated hints so a benchmark can measure a cold cache again.
+  @visibleForTesting
+  void resetChunkCache() {
+    clearChunkCache();
+    resetChunkCacheStats();
+  }
+
+  /// Discards generated hints while preserving measurement counters.
+  @visibleForTesting
+  void clearChunkCache() {
+    _chunkCache.clear();
+  }
+
+  /// Starts a new measurement window without discarding generated hints.
+  @visibleForTesting
+  void resetChunkCacheStats() {
+    cacheHits = 0;
+    cacheMisses = 0;
+  }
+
   static int chunkKey(int chunkX, int chunkY) =>
       ((chunkX & 0xffffffff) << 32) | (chunkY & 0xffffffff);
 
   /// Check if chunk currently has active timeout (explosion within last 5 minutes)
   /// Pass in [now]/[cutoff] so flood-fill can hoist DateTime.now() out of the loop.
-  bool _hasActiveTimeout(int chunkX, int chunkY, DateTime now, DateTime cutoff) {
+  bool _hasActiveTimeout(
+    int chunkX,
+    int chunkY,
+    DateTime now,
+    DateTime cutoff,
+  ) {
     final chunkSize = world.chunkSize;
     final startX = chunkX * chunkSize;
     final startY = chunkY * chunkSize;
-    
+
     // Check all tiles in the chunk
     for (int ly = 0; ly < chunkSize; ly++) {
       for (int lx = 0; lx < chunkSize; lx++) {
         final coord = Coord(startX + lx, startY + ly);
         final state = storage.get(coord);
-        if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
+        if (state.exploded &&
+            state.openedAt != null &&
+            state.openedAt!.isAfter(cutoff)) {
           return true;
         }
       }
@@ -106,10 +134,13 @@ class RulesEngine {
   }
 
   /// Open a tile with flood-fill for hint 0 (iterative to avoid stack overflow)
-  void _openTileFloodFill(Coord startCoord, DateTime timestamp,
-      {void Function(Coord, DateTime)? onExplosion,
-      required DateTime cutoff,
-      required Map<int, bool> timeoutMemo}) {
+  void _openTileFloodFill(
+    Coord startCoord,
+    DateTime timestamp, {
+    void Function(Coord, DateTime)? onExplosion,
+    required DateTime cutoff,
+    required Map<int, bool> timeoutMemo,
+  }) {
     final queue = Queue<Coord>()..add(startCoord);
     final visited = <Coord>{};
     const maxTilesToOpen = 10000; // Prevent infinite expansion
@@ -117,12 +148,14 @@ class RulesEngine {
     bool isChunkLocked(int chunkX, int chunkY) {
       final key = chunkKey(chunkX, chunkY);
       return timeoutMemo.putIfAbsent(
-          key, () => _hasActiveTimeout(chunkX, chunkY, timestamp, cutoff));
+        key,
+        () => _hasActiveTimeout(chunkX, chunkY, timestamp, cutoff),
+      );
     }
 
     while (queue.isNotEmpty && visited.length < maxTilesToOpen) {
       final coord = queue.removeFirst();
-      
+
       // Skip if already visited
       if (visited.contains(coord)) continue;
       visited.add(coord);
@@ -140,23 +173,27 @@ class RulesEngine {
       }
 
       final isMine = _isMine(coord);
-      
+
       if (isMine) {
         // Explode
-        storage.applyEvent(TileEvent(
-          coord: coord,
-          type: TileEventType.explode,
-          timestamp: timestamp,
-        ));
+        storage.applyEvent(
+          TileEvent(
+            coord: coord,
+            type: TileEventType.explode,
+            timestamp: timestamp,
+          ),
+        );
         // Notify about explosion
         onExplosion?.call(coord, timestamp);
       } else {
         // Open the tile
-        storage.applyEvent(TileEvent(
-          coord: coord,
-          type: TileEventType.open,
-          timestamp: timestamp,
-        ));
+        storage.applyEvent(
+          TileEvent(
+            coord: coord,
+            type: TileEventType.open,
+            timestamp: timestamp,
+          ),
+        );
 
         // If hint is 0, add neighbors to queue
         final hint = _getHint(coord);
@@ -186,8 +223,13 @@ class RulesEngine {
 
     if (state.flag == TileFlag.closed) {
       // Open closed tile with iterative flood-fill
-      _openTileFloodFill(coord, timestamp,
-          onExplosion: onExplosion, cutoff: cutoff, timeoutMemo: timeoutMemo);
+      _openTileFloodFill(
+        coord,
+        timestamp,
+        onExplosion: onExplosion,
+        cutoff: cutoff,
+        timeoutMemo: timeoutMemo,
+      );
     } else if (state.flag == TileFlag.open) {
       // Chord: if hint equals flagged neighbors, open all non-flagged neighbors
       final hint = _getHint(coord);
@@ -198,10 +240,13 @@ class RulesEngine {
           for (final neighbor in _getNeighbors(coord)) {
             final neighborState = storage.get(neighbor);
             if (neighborState.flag == TileFlag.closed) {
-              _openTileFloodFill(neighbor, timestamp,
-                  onExplosion: onExplosion,
-                  cutoff: cutoff,
-                  timeoutMemo: timeoutMemo);
+              _openTileFloodFill(
+                neighbor,
+                timestamp,
+                onExplosion: onExplosion,
+                cutoff: cutoff,
+                timeoutMemo: timeoutMemo,
+              );
             }
           }
         }
@@ -225,21 +270,21 @@ class RulesEngine {
     }
 
     final timestamp = DateTime.now();
-    
+
     if (state.flag == TileFlag.flagged) {
       // Unflag
-      storage.applyEvent(TileEvent(
-        coord: coord,
-        type: TileEventType.unflag,
-        timestamp: timestamp,
-      ));
+      storage.applyEvent(
+        TileEvent(
+          coord: coord,
+          type: TileEventType.unflag,
+          timestamp: timestamp,
+        ),
+      );
     } else {
       // Flag
-      storage.applyEvent(TileEvent(
-        coord: coord,
-        type: TileEventType.flag,
-        timestamp: timestamp,
-      ));
+      storage.applyEvent(
+        TileEvent(coord: coord, type: TileEventType.flag, timestamp: timestamp),
+      );
     }
   }
 }

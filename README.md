@@ -94,6 +94,14 @@ The version comes from `pubspec.yaml`; `N` uses the GitHub workflow run number. 
 
 
 
+## Performance benchmarks
+
+Run `./scripts/benchmark.sh` for an unattended profile-mode Linux benchmark of
+large and zoomed-out worlds in both light and dark mode. See
+[docs/performance.md](docs/performance.md) for metrics, JSON reports,
+repeatable baselines, regression comparisons, and visual reference screenshots.
+The benchmark is manual; it is not run in CI.
+
 ## Contributing & Feedback
 
 If you find bugs or want to suggest features, please open an issue or PR on the GitHub repository. Your feedback - especially from prerelease testing - is very welcome.
