@@ -34,4 +34,4 @@ jobs:
         run: flutter test
 
       - name: Performance summary tests
-        run: python3 -m unittest test/performance_summary_test.py
+        run: python3 test/performance_summary_test.py
