@@ -25,7 +25,8 @@ class MinesweeperApp extends StatefulWidget {
   State<MinesweeperApp> createState() => _MinesweeperAppState();
 }
 
-class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObserver {
+class _MinesweeperAppState extends State<MinesweeperApp>
+    with WidgetsBindingObserver {
   MinesweeperGame? _game;
 
   @override
@@ -48,7 +49,8 @@ class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObse
 
   void _updateGameBrightness() {
     if (_game != null) {
-      final brightness = WidgetsBinding.instance.platformDispatcher.platformBrightness;
+      final brightness =
+          WidgetsBinding.instance.platformDispatcher.platformBrightness;
       _game!.updateBrightness(brightness);
     }
   }
@@ -66,55 +68,88 @@ class _MinesweeperAppState extends State<MinesweeperApp> with WidgetsBindingObse
     return Directionality(
       textDirection: TextDirection.ltr,
       child: Stack(
-      children: [
-        Positioned.fill(
-          child: GameWidget<MinesweeperGame>.controlled(
-            gameFactory: () => game,
+        children: [
+          Positioned.fill(
+            child: GameWidget<MinesweeperGame>.controlled(
+              gameFactory: () => game,
+            ),
           ),
-        ),
-        // On-screen perf readout (debug + profile only; game pushes
-        // a new string every ~2s, see MinesweeperGame.update).
-        // SafeArea keeps it below the Android status bar / notch.
-        Positioned(
-          top: 0,
-          left: 8,
-          right: 8,
-          child: SafeArea(
-            child: IgnorePointer(
-              child: ValueListenableBuilder<String>(
-                valueListenable: game.perfOverlay,
-                builder: (context, text, _) {
-                  if (kReleaseMode) return const SizedBox.shrink();
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(160),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      text,
-                      softWrap: true,
-                      maxLines: 3,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontFamily: 'monospace',
+          // On-screen perf readout (debug + profile only; game pushes
+          // a new string every ~2s, see MinesweeperGame.update).
+          // SafeArea keeps it below the Android status bar / notch.
+          Positioned(
+            top: 0,
+            left: 8,
+            right: 8,
+            child: SafeArea(
+              child: IgnorePointer(
+                child: ValueListenableBuilder<String>(
+                  valueListenable: game.perfOverlay,
+                  builder: (context, text, _) {
+                    if (kReleaseMode) return const SizedBox.shrink();
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
                       ),
-                    ),
-                  );
-                },
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(160),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        text,
+                        softWrap: true,
+                        maxLines: 3,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
       ),
     );
   }
 }
 
-class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPressDetector {
+class MinesweeperGame extends FlameGame
+    with ScaleDetector, TapDetector, LongPressDetector {
+  MinesweeperGame({
+    core_models.World? initialWorld,
+    Map<Coord, TileState>? initialTiles,
+    this.enablePerfReporting = true,
+    this.initialBrightness,
+  }) : _initialWorld = initialWorld,
+       _initialTiles = initialTiles {
+    if (initialBrightness != null) {
+      brightness = initialBrightness!;
+    }
+  }
+
+  final core_models.World? _initialWorld;
+  final Map<Coord, TileState>? _initialTiles;
+  final bool enablePerfReporting;
+
+  /// Optional deterministic theme for benchmarks; when null the platform
+  /// brightness is used.
+  final Brightness? initialBrightness;
+
+  /// Benchmark-only deterministic camera movement, called once per game tick.
+  void Function(MinesweeperGame game, double dt)? benchmarkUpdate;
+
+  /// Benchmark-only setup performed inside the measured UI render phase.
+  void Function()? benchmarkBeforeRender;
+
+  /// Benchmark-only clock override used to freeze time for screenshot capture.
+  /// Null means the real wall clock.
+  DateTime? benchmarkFrozenNow;
+
   late core_models.World minesweeperWorld;
   late TileStorage storage;
   late RulesEngine rules;
@@ -133,7 +168,8 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
   DateTime? _pendingTapTime;
 
   Coord _coordFromWidgetPos(Vector2 widgetPos) {
-    final worldPos = cameraComponent.viewfinder.position +
+    final worldPos =
+        cameraComponent.viewfinder.position +
         (widgetPos - size / 2) / cameraComponent.viewfinder.zoom;
     return Coord(
       (worldPos.x / _tileSize).floor(),
@@ -168,8 +204,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
   // Debug+profile perf counters (zero-cost in release, see FrameStats).
   // perfOverlay drives the on-screen readout; updated ~every 2s.
   final FrameStats perf = FrameStats();
-  final ValueNotifier<String> perfOverlay =
-      ValueNotifier<String>('PERF starting…');
+  final ValueNotifier<String> perfOverlay = ValueNotifier<String>(
+    'PERF starting…',
+  );
   bool _isLoaded = false;
 
   static int chunkKey(int chunkX, int chunkY) =>
@@ -189,15 +226,23 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
 
   @override
   Future<void> onLoad() async {
-    // Initialize brightness from platform
-    brightness = WidgetsBinding.instance.platformDispatcher.platformBrightness;
+    // Initialize brightness from the benchmark override or platform.
+    brightness =
+        initialBrightness ??
+        WidgetsBinding.instance.platformDispatcher.platformBrightness;
     _frameNow = DateTime.now();
 
     // Initialize storage first
     storage = TileStorage();
 
-    // Try to load from previously selected directory
-    await _loadWorld();
+    final initialWorld = _initialWorld;
+    if (initialWorld == null) {
+      await _loadWorld();
+    } else {
+      minesweeperWorld = initialWorld;
+      _initialTiles?.forEach(storage.updateTileState);
+      _rebuildChunkExplosionCache();
+    }
 
     // Initialize rules engine
     rules = RulesEngine(minesweeperWorld, storage);
@@ -215,12 +260,16 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
     await gameWorld.add(_boardRenderer!);
     _isLoaded = true;
 
-    // Set up auto-save every 30 seconds (only if changes)
-    _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (_) {
-      if (_hasUnsavedChanges) {
-        _saveWorld();
-      }
-    });
+    // Benchmarks are in-memory and must not touch the player's save file.
+    if (initialWorld == null) {
+      _autoSaveTimer = dart_async.Timer.periodic(const Duration(seconds: 30), (
+        _,
+      ) {
+        if (_hasUnsavedChanges) {
+          _saveWorld();
+        }
+      });
+    }
   }
 
   void updateBrightness(Brightness newBrightness) {
@@ -298,8 +347,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
     super.update(dt);
 
     // Single clock read per frame; renderer + timeout logic reuse it.
-    _frameNow = DateTime.now();
-    perf.recordFrame(dt);
+    _frameNow = benchmarkFrozenNow ?? DateTime.now();
+    benchmarkUpdate?.call(this, dt);
+    if (enablePerfReporting) perf.recordFrame(dt);
 
     // Expire a single pending tap (arms the manual double-tap only briefly).
     if (_pendingTapTime != null &&
@@ -324,11 +374,13 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
       }
     }
 
-    if (!_isLoaded) return;
-    final report = perf.maybeReport(dt,
-        storedTiles: storage.count,
-        chunkHits: rules.cacheHits,
-        chunkMisses: rules.cacheMisses);
+    if (!_isLoaded || !enablePerfReporting) return;
+    final report = perf.maybeReport(
+      dt,
+      storedTiles: storage.count,
+      chunkHits: rules.cacheHits,
+      chunkMisses: rules.cacheMisses,
+    );
     if (report != null && !kReleaseMode) {
       debugPrint(report);
       perfOverlay.value = report;
@@ -454,8 +506,7 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
   (bool, Duration?) getChunkTimeoutInfoXY(int tileX, int tileY) {
     if (_chunkExplosionTimes.isEmpty) return (false, null);
     final cs = minesweeperWorld.chunkSize;
-    return getChunkTimeoutByChunk(
-        chunkOf(tileX, cs), chunkOf(tileY, cs));
+    return getChunkTimeoutByChunk(chunkOf(tileX, cs), chunkOf(tileY, cs));
   }
 
   // Chunk-level query: no tile state involved, so the lock badge never
@@ -492,7 +543,9 @@ class MinesweeperGame extends FlameGame with ScaleDetector, TapDetector, LongPre
 
     for (final entry in storage.entries) {
       final state = entry.value;
-      if (state.exploded && state.openedAt != null && state.openedAt!.isAfter(cutoff)) {
+      if (state.exploded &&
+          state.openedAt != null &&
+          state.openedAt!.isAfter(cutoff)) {
         _recordChunkExplosion(entry.key, state.openedAt!);
       }
     }
@@ -555,8 +608,7 @@ class BoardRenderer extends Component {
     ..strokeWidth = 4.0;
   // Big lock badge: dark pill + red outline, identical in both themes so
   // the locked chunk reads instantly.
-  static final Paint _lockBadgeBg = Paint()
-    ..color = const Color(0xDD111111);
+  static final Paint _lockBadgeBg = Paint()..color = const Color(0xDD111111);
   static final Paint _lockBadgeBorder = Paint()
     ..color = const Color(0xFFE53935)
     ..style = PaintingStyle.stroke
@@ -600,7 +652,10 @@ class BoardRenderer extends Component {
 
   @override
   void render(Canvas canvas) {
-    final Stopwatch? sw = kReleaseMode ? null : (Stopwatch()..start());
+    game.benchmarkBeforeRender?.call();
+    final Stopwatch? sw = kReleaseMode || !game.enablePerfReporting
+        ? null
+        : (Stopwatch()..start());
     final viewfinder = game.cameraComponent.viewfinder;
     final zoom = viewfinder.zoom;
     final cameraPos = viewfinder.position;
@@ -631,21 +686,27 @@ class BoardRenderer extends Component {
         // several Paints before). Storage lookup needs it.
         final coord = Coord(x, y);
         final state = game.storage.get(coord);
-        final rect = Rect.fromLTWH(x * tileSize, y * tileSize, tileSize, tileSize);
+        final rect = Rect.fromLTWH(
+          x * tileSize,
+          y * tileSize,
+          tileSize,
+          tileSize,
+        );
 
         bool isTimedOut = false;
-        if (hasTimeouts &&
-            (state.flag == TileFlag.closed || state.exploded)) {
+        if (hasTimeouts && (state.flag == TileFlag.closed || state.exploded)) {
           isTimedOut = game.getChunkTimeoutInfoXY(x, y).$1;
         }
 
         // Per-tile expiry fallback: if this mine's own 5min already passed
         // but update()'s 1s conversion tick hasn't run yet, render it as
         // flagged instead of black. Covers any scheduling race.
-        final bool tileExpired = state.exploded &&
+        final bool tileExpired =
+            state.exploded &&
             state.openedAt != null &&
-            game.frameNow.isAfter(state.openedAt!
-                .add(MinesweeperGame._chunkTimeoutDuration));
+            game.frameNow.isAfter(
+              state.openedAt!.add(MinesweeperGame._chunkTimeoutDuration),
+            );
 
         final Paint paint;
         if (tileExpired) {
@@ -679,7 +740,10 @@ class BoardRenderer extends Component {
         // Glow: original blurred halo, always drawn (baseline for measurement).
         if (state.flag == TileFlag.open && !state.exploded) {
           canvas.drawCircle(
-              Offset(cx, cy), tileSize * 0.35, isDarkMode ? _glowDark : _glowLight);
+            Offset(cx, cy),
+            tileSize * 0.35,
+            isDarkMode ? _glowDark : _glowLight,
+          );
         }
 
         if (isDarkMode) {
@@ -698,10 +762,7 @@ class BoardRenderer extends Component {
                 fontWeight: FontWeight.bold,
               ),
             );
-            tp.paint(
-              canvas,
-              Offset(cx - tp.width / 2, cy - tp.height / 2),
-            );
+            tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
           }
         }
       }
@@ -799,8 +860,7 @@ class BoardRenderer extends Component {
         final remaining = timeout.$2!;
         final minutes = remaining.inMinutes;
         final seconds = remaining.inSeconds % 60;
-        final text =
-            '$minutes:${seconds.toString().padLeft(2, '0')}';
+        final text = '$minutes:${seconds.toString().padLeft(2, '0')}';
         final tp = _timerPainter(text, Colors.white, fontSize);
 
         // Clamp to the visible viewport so the badge stays on screen even
@@ -808,9 +868,17 @@ class BoardRenderer extends Component {
         final chunkCx = (cxx * chunkSize + chunkSize / 2) * tileSize;
         final chunkCy = (cyy * chunkSize + chunkSize / 2) * tileSize;
         final badgeCx = clampOrCenter(
-            chunkCx, viewLeft + margin, viewRight - margin, viewCx);
+          chunkCx,
+          viewLeft + margin,
+          viewRight - margin,
+          viewCx,
+        );
         final badgeCy = clampOrCenter(
-            chunkCy, viewTop + margin, viewBottom - margin, viewCy);
+          chunkCy,
+          viewTop + margin,
+          viewBottom - margin,
+          viewCy,
+        );
 
         final padH = tileSize * 0.55;
         final padV = tileSize * 0.35;
@@ -825,7 +893,9 @@ class BoardRenderer extends Component {
         canvas.drawRRect(bgRect, _lockBadgeBg);
         canvas.drawRRect(bgRect, _lockBadgeBorder);
         tp.paint(
-            canvas, Offset(badgeCx - tp.width / 2, badgeCy - tp.height / 2));
+          canvas,
+          Offset(badgeCx - tp.width / 2, badgeCy - tp.height / 2),
+        );
       }
     }
   }

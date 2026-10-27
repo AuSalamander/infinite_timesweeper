@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-27T22:07:34.123829Z",
+  "flutterVersion": "Flutter 3.47.2 / Dart 3.13.2 / engine a804b261645ef8c13eb3d5c44a5c2fb0340c5539",
+  "gitRevision": "1c89ac2-dirty",
+  "surface": {
+    "width": 930.0,
+    "height": 1017.0,
+    "devicePixelRatio": 1.0
+  },
+  "surfaceStable": true,
+  "surfaceChanges": [],
+  "screenshotSize": {
+    "width": 800.0,
+    "height": 600.0
+  },
+  "warmupFrames": 30,
+  "minimumMeasuredFrames": 200,
+  "scenes": [
+    "zoomed_out_static_light",
+    "zoomed_out_pan_light",
+    "text_cold_light",
+    "text_warm_light",
+    "zoomed_out_static_dark",
+    "zoomed_out_pan_dark",
+    "text_cold_dark",
+    "text_warm_dark",
+    "zoomed_out_timeouts_light",
+    "zoomed_out_timeouts_dark"
+  ],
+  "note": "Reference screenshots are 800x600 centred crops tied to this Linux environment (Flutter version, fonts, and GPU stack). Regenerate them on the same machine after intentional visual changes."
+}
